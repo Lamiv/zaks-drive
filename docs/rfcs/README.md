@@ -49,7 +49,9 @@ Rejected and deferred RFCs are kept, with the reasons, so the same discussion do
 
 ## Index
 
-No RFCs have been written yet. This index lists them as they are merged.
+This index lists the RFCs in this directory.
 
 | RFC | Title | Status |
 |---|---|---|
+| [0001](0001-repositories-and-storage-backends.md) | Multiple repositories with local or SharePoint storage | draft |
+| [0002](0002-server-admin-ui.md) | Admin UI built into the server | draft |
