@@ -35,6 +35,8 @@ LABEL org.opencontainers.image.title="ZAKS Drive" \
 COPY --from=build /out/zaks-drive-server /out/zaks-drive /out/adapter /
 # Disk-backed spool for uploads without Content-Length (mount a volume here).
 COPY --from=build --chown=65532:65532 /out/spool /var/spool/adapter
+# State directory (repository definitions, secrets, local data): mount a volume here.
+COPY --from=build --chown=65532:65532 /out/spool /var/lib/zaks-drive
 EXPOSE 8080 8090 9090
 USER nonroot:nonroot
 ENTRYPOINT ["/zaks-drive-server"]

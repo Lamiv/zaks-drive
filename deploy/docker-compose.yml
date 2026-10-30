@@ -19,9 +19,11 @@ services:
     env_file: .env
     environment:
       CONFIG_FILE: /etc/adapter/config.yaml   # lets `exec adapter /zaks-drive check` find the config
+      STATE_DIR: /var/lib/zaks-drive                # repository definitions, secrets and local documents
     volumes:
       - ./config.yaml:/etc/adapter/config.yaml:ro
       - spool:/var/spool/adapter   # disk-backed spool (not RAM)
+      - state:/var/lib/zaks-drive                  # managed repositories: definitions, secrets, local documents (back this up)
     ports:
       # Host ports are configurable in deploy/.env when they are already taken
       # (Ubuntu's Cockpit uses 9090). Container ports stay fixed.
@@ -48,3 +50,4 @@ services:
 
 volumes:
   spool:
+  state:

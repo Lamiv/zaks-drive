@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,6 +38,10 @@ type Config struct {
 	emptyRefs map[string]bool
 	// repoErrs are problems found while reading the state directory; Validate reports them.
 	repoErrs []error
+	// Fallback is set when the repository definitions in the state directory
+	// did not validate and the last state that started is served instead; it
+	// holds the reason.
+	Fallback string
 }
 
 type ContentServerConfig struct {
@@ -72,10 +77,13 @@ type ServerConfig struct {
 	ReadHeaderTO    time.Duration `yaml:"readHeaderTimeout"`
 	IdleTimeout     time.Duration `yaml:"idleTimeout"`
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
-	CORSOrigins     []string      `yaml:"corsOrigins"`
-	TLSCertFile     string        `yaml:"tlsCertFile"`
-	TLSKeyFile      string        `yaml:"tlsKeyFile"`
-	EnablePprof     bool          `yaml:"enablePprof"`
+	// DrainTimeout bounds how long a restart for a repository change waits for
+	// running requests (maintenance mode refuses new ones meanwhile).
+	DrainTimeout time.Duration `yaml:"drainTimeout"`
+	CORSOrigins  []string      `yaml:"corsOrigins"`
+	TLSCertFile  string        `yaml:"tlsCertFile"`
+	TLSKeyFile   string        `yaml:"tlsKeyFile"`
+	EnablePprof  bool          `yaml:"enablePprof"`
 	// AdminToken, when set, is required (Bearer) for mutating admin
 	// endpoints such as certificate activation.
 	AdminToken string `yaml:"adminToken"`
@@ -211,6 +219,7 @@ func Default() Config {
 			ReadHeaderTO:    10 * time.Second,
 			IdleTimeout:     120 * time.Second,
 			ShutdownTimeout: 30 * time.Second,
+			DrainTimeout:    30 * time.Second,
 		},
 		Graph: GraphConfig{
 			AuthorityURL:     "https://login.microsoftonline.com",
@@ -238,6 +247,24 @@ var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Load reads the YAML file at path (optional; "" skips) and applies env overrides.
 func Load(path string) (Config, error) {
+	cfg, err := load(path, ReposDir)
+	if err == nil || cfg.Server.StateDir == "" {
+		return cfg, err
+	}
+	// A changed repository definition that no longer validates must not take
+	// the server down: fall back to the definitions of the last state that
+	// started, and say so. Only when that snapshot exists and itself loads.
+	lastGood := LastGoodDir + "/" + ReposDir
+	if st, serr := os.Stat(filepath.Join(cfg.Server.StateDir, filepath.FromSlash(lastGood))); serr == nil && st.IsDir() {
+		if fb, ferr := load(path, lastGood); ferr == nil {
+			fb.Fallback = strings.TrimSpace(apperr.Format(err))
+			return fb, nil
+		}
+	}
+	return cfg, err
+}
+
+func load(path, reposDir string) (Config, error) {
 	cfg := Default()
 	if path != "" {
 		raw, err := os.ReadFile(path)
@@ -262,7 +289,7 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyEnv(&cfg)
-	cfg.loadManaged()
+	cfg.loadManaged(reposDir)
 	normalize(&cfg)
 	for i := range cfg.Repositories {
 		cfg.repoErrs = append(cfg.repoErrs, cfg.resolveRepository(&cfg.Repositories[i])...)
@@ -406,7 +433,9 @@ func (c Config) Validate() error {
 		add(apperr.New(apperr.CfgNoInterfaces, "server.interfaces is empty (check also the ADAPTER_INTERFACES variable)"))
 	}
 
-	if len(c.Repositories) == 0 {
+	// With a state directory the first repository is added through zaks-drive repo add,
+	// so a server without any repository yet may start (and reports not ready).
+	if len(c.Repositories) == 0 && c.Server.StateDir == "" {
 		add(apperr.New(apperr.CfgNoRepositories, "the `repositories:` list is empty"))
 	}
 	seen := map[string]bool{}
@@ -423,7 +452,7 @@ func (c Config) Validate() error {
 		c.validateRepository(name, r, add)
 	}
 
-	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 {
+	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 && !(c.Server.StateDir != "" && len(c.Repositories) == 0) {
 		add(apperr.New(apperr.CfgCSRepositoriesMissing, "server.interfaces enables contentrepo but contentServer.repositories is empty"))
 	}
 	seenRep := map[string]bool{}

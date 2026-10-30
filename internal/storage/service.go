@@ -552,12 +552,16 @@ func (s *Service) Thumbnail(ctx context.Context, repo *Repository, id, size stri
 	return repo.backend.Thumbnail(ctx, id, size)
 }
 
-// Ping checks connectivity of the first repository's store.
+// Ping checks that every repository's store is reachable. The failures of
+// all unreachable repositories are reported together, each with its ID.
 func (s *Service) Ping(ctx context.Context) error {
+	var errs []error
 	for _, id := range s.order {
-		return s.repos[id].backend.Ready(ctx)
+		if err := s.repos[id].backend.Ready(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("repository %s: %w", id, err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // ---- small TTL cache for item metadata ----

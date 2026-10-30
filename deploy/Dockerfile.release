@@ -17,6 +17,9 @@ COPY zaks-drive-server /zaks-drive-server
 COPY zaks-drive-server /zaks-drive
 COPY zaks-drive-server /adapter
 COPY --chown=65532:65532 spool /var/spool/adapter
+# State directory (repository definitions, secrets, local data): mount a volume here. The image copy of
+# the spool folder gives it the right owner; the volume inherits that on first use.
+COPY --chown=65532:65532 spool /var/lib/zaks-drive
 EXPOSE 8080 8090 9090
 USER nonroot:nonroot
 ENTRYPOINT ["/zaks-drive-server"]

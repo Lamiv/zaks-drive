@@ -847,6 +847,14 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 |---|---|---|
 | [`CLI_ADMIN_UNREACHABLE`](#cli_admin_unreachable) | — | Cannot reach the adapter's admin endpoint |
 | [`CLI_ADMIN_ROUTE_MISSING`](#cli_admin_route_missing) | — | Certificate administration is not available |
+| [`ADMIN_TOKEN_REQUIRED`](#admin_token_required) | 503 | Repository administration needs an ADMIN_TOKEN |
+| [`ADMIN_STATE_UNAVAILABLE`](#admin_state_unavailable) | 503 | No state directory |
+| [`ADMIN_REPO_NOT_FOUND`](#admin_repo_not_found) | 404 | No such managed repository |
+| [`ADMIN_REPO_EXISTS`](#admin_repo_exists) | 409 | Repository already exists |
+| [`ADMIN_REPO_STATIC`](#admin_repo_static) | 409 | Repository comes from config.yaml |
+| [`ADMIN_REPO_IN_USE`](#admin_repo_in_use) | 409 | Repository is exposed to SAP |
+| [`ADMIN_REPO_INVALID`](#admin_repo_invalid) | 400 | Repository settings rejected |
+| [`ADMIN_APPLY_BUSY`](#admin_apply_busy) | 409 | A restart is already in progress |
 | [`CERT_NOT_RECEIVED`](#cert_not_received) | 400 | No certificate from SAP for this repository |
 | [`CERT_REQUEST_INVALID`](#cert_request_invalid) | 400 | Admin request body not valid |
 
@@ -863,6 +871,62 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** The admin endpoint answered 404: the `contentrepo` interface is not enabled, or the adapter is still starting.
 - **Fix:** Enable `contentrepo` in `server.interfaces`, wait for /readyz, and retry.
+
+### `ADMIN_TOKEN_REQUIRED`
+
+**Repository administration needs an ADMIN_TOKEN** (HTTP 503)
+
+- **Cause:** Changing repositories writes secrets, so the admin API refuses to work without an `ADMIN_TOKEN` (the certificate endpoints only check it when set).
+- **Fix:** Set ADMIN_TOKEN in deploy/.env to a long random value and recreate the container.
+
+### `ADMIN_STATE_UNAVAILABLE`
+
+**No state directory** (HTTP 503)
+
+- **Cause:** Managed repositories live in the state directory (`server.stateDir`, STATE_DIR), which is not configured or cannot be written.
+- **Fix:** Use the supplied compose file, which mounts the `state` volume at /var/lib/zaks-drive and sets STATE_DIR, or set `server.stateDir`.
+
+### `ADMIN_REPO_NOT_FOUND`
+
+**No such managed repository** (HTTP 404)
+
+- **Cause:** There is no repository with that ID in the state directory.
+- **Fix:** `zaks-drive repo list` shows the repositories.
+
+### `ADMIN_REPO_EXISTS`
+
+**Repository already exists** (HTTP 409)
+
+- **Cause:** A repository with that ID exists, in config.yaml or as a managed repository.
+- **Fix:** Choose another ID, or update the existing repository.
+
+### `ADMIN_REPO_STATIC`
+
+**Repository comes from config.yaml** (HTTP 409)
+
+- **Cause:** Repositories defined in config.yaml are read-only for the management tools.
+- **Fix:** Edit config.yaml and recreate the container, or move the repository into the managed set.
+
+### `ADMIN_REPO_IN_USE`
+
+**Repository is exposed to SAP** (HTTP 409)
+
+- **Cause:** The repository has an `sap` block, so SAP may still hold references to documents stored in it. Detaching it makes them unreachable.
+- **Fix:** Remove it from SAP first, or repeat the command with the explicit `allowInUse` confirmation.
+
+### `ADMIN_REPO_INVALID`
+
+**Repository settings rejected** (HTTP 400)
+
+- **Cause:** The settings do not pass the server's own validation; nothing was changed. The detail names each problem.
+- **Fix:** Correct the settings named and retry.
+
+### `ADMIN_APPLY_BUSY`
+
+**A restart is already in progress** (HTTP 409)
+
+- **Cause:** The server is already draining requests for a restart.
+- **Fix:** Wait for it to finish, or cancel it first.
 
 ### `CERT_NOT_RECEIVED`
 

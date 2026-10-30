@@ -36,6 +36,8 @@ const (
 	ReposDir   = "repos.d"
 	SecretsDir = "secrets"
 	DataDir    = "data"
+	// LastGoodDir holds a copy of the definitions of the last state that started.
+	LastGoodDir = "last-good"
 
 	maxRepoFile   = 64 << 10
 	maxSecretFile = 16 << 10
@@ -60,7 +62,7 @@ func (l LocalConfig) KeepVersions() int {
 // to c.Repositories. Problems are collected in c.repoErrs so Validate can
 // report them together with everything else. The files hold no secrets:
 // those are separate files below secrets/, read here.
-func (c *Config) loadManaged() {
+func (c *Config) loadManaged(reposDir string) {
 	if c.Server.StateDir == "" {
 		return
 	}
@@ -74,17 +76,17 @@ func (c *Config) loadManaged() {
 	}
 	defer root.Close()
 
-	dir, err := root.Open(ReposDir)
+	dir, err := root.Open(reposDir)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			c.repoErrs = append(c.repoErrs, apperr.New(apperr.CfgRepoFileInvalid, "cannot read %s in the state directory: %v", ReposDir, err).Wrap(err))
+			c.repoErrs = append(c.repoErrs, apperr.New(apperr.CfgRepoFileInvalid, "cannot read %s in the state directory: %v", reposDir, err).Wrap(err))
 		}
 		return
 	}
 	entries, err := dir.ReadDir(-1)
 	dir.Close()
 	if err != nil {
-		c.repoErrs = append(c.repoErrs, apperr.New(apperr.CfgRepoFileInvalid, "cannot list %s: %v", ReposDir, err).Wrap(err))
+		c.repoErrs = append(c.repoErrs, apperr.New(apperr.CfgRepoFileInvalid, "cannot list %s: %v", reposDir, err).Wrap(err))
 		return
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
@@ -95,9 +97,9 @@ func (c *Config) loadManaged() {
 			continue
 		}
 		bad := func(format string, args ...any) {
-			c.repoErrs = append(c.repoErrs, apperr.New(apperr.CfgRepoFileInvalid, "%s/%s: "+format, append([]any{ReposDir, name}, args...)...))
+			c.repoErrs = append(c.repoErrs, apperr.New(apperr.CfgRepoFileInvalid, "%s/%s: "+format, append([]any{reposDir, name}, args...)...))
 		}
-		raw, err := readLimited(root, path.Join(ReposDir, name), maxRepoFile)
+		raw, err := readLimited(root, path.Join(reposDir, name), maxRepoFile)
 		if err != nil {
 			bad("%v", err)
 			continue
@@ -259,7 +261,7 @@ func (c Config) validateRepository(name string, r RepositoryConfig, add func(*ap
 // credentials.
 func (c Config) usesGlobalGraph() bool {
 	if len(c.Repositories) == 0 {
-		return true
+		return c.Server.StateDir == "" // a server waiting for its first repository needs no Microsoft credentials yet
 	}
 	for _, r := range c.Repositories {
 		if r.Backend != BackendLocal && r.ClientSecretFile == "" {

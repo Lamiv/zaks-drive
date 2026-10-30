@@ -31,8 +31,10 @@ import (
 	"github.com/Lamiv/zaks-drive/internal/auth"
 	"github.com/Lamiv/zaks-drive/internal/config"
 	"github.com/Lamiv/zaks-drive/internal/contentrepo"
+	"github.com/Lamiv/zaks-drive/internal/drain"
 	"github.com/Lamiv/zaks-drive/internal/graph"
 	"github.com/Lamiv/zaks-drive/internal/observability"
+	"github.com/Lamiv/zaks-drive/internal/repoadmin"
 	"github.com/Lamiv/zaks-drive/internal/restapi"
 	"github.com/Lamiv/zaks-drive/internal/safelog"
 	"github.com/Lamiv/zaks-drive/internal/storage"
@@ -101,6 +103,8 @@ func main() {
 	case "help":
 		usage(os.Stdout)
 		return
+	case "repos":
+		os.Exit(reposCLI(*cfgPath, flag.Args()[1:]))
 	case "certs":
 		os.Exit(certsCLI(flag.Args()[1:]))
 	case "errors":
@@ -125,7 +129,7 @@ func main() {
 		os.Exit(runCheck(cfg))
 	}
 	log.Info(productName+" starting", "version", version, "interfaces", cfg.Server.Interfaces, "go", runtime.Version())
-	if err := run(cfg, log); err != nil {
+	if err := run(cfg, *cfgPath, log); err != nil {
 		if ae, ok := apperr.As(err); ok {
 			log.Error(productName+" stopped", "code", ae.Code, "title", ae.Title(), "detail", safelog.OneLine(safelog.Redact(ae.Detail)), "fix", ae.Fix())
 		} else {
@@ -136,7 +140,7 @@ func main() {
 	}
 }
 
-func run(cfg config.Config, log *slog.Logger) error {
+func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -164,6 +168,17 @@ func run(cfg config.Config, log *slog.Logger) error {
 	var status atomic.Value // string: current readiness reason
 	status.Store("starting: resolving repositories")
 	adminMux := adminHandler(cfg.Server.EnablePprof, &ready, &status)
+	gate := drain.New(cfg.Server.DrainTimeout)
+	var restarting atomic.Bool // set when the server ends to apply repository changes
+	mgr := &repoadmin.Manager{StateDir: cfg.Server.StateDir, Actor: "api", Load: func() (config.Config, error) { return config.Load(cfgPath) }}
+	applied, _ := mgr.Fingerprint()
+	if cfg.Fallback != "" {
+		log.Error("the repository definitions in the state directory are not valid; serving the last working state", "problem", safelog.OneLine(safelog.Redact(cfg.Fallback)))
+	} else if cfg.Server.StateDir != "" {
+		if err := mgr.Snapshot(); err != nil {
+			log.Warn("cannot save the last working repository state", safelog.Err(err))
+		}
+	}
 	admin := newServer(cfg.Server, cfg.Server.AdminAddr, adminMux)
 	admin.TLSConfig = nil
 	errCh := make(chan error, 8)
@@ -187,6 +202,18 @@ func run(cfg config.Config, log *slog.Logger) error {
 	// Resolving site/library IDs needs Graph; retry so the container
 	// survives starting before the network or IdP is reachable.
 	apps := newAppClients(cfg, transport, log)
+	// Repository administration works from the first moment, also while the
+	// repositories cannot be resolved yet, so a broken change can be repaired.
+	(&repoAPI{
+		mgr: mgr, token: cfg.Server.AdminToken, applied: applied, fallback: cfg.Fallback, gate: gate, ready: &ready,
+		version: version, drain: cfg.Server.DrainTimeout, log: log,
+		stop: func() { restarting.Store(true); stop() },
+		check: func(ctx context.Context, id string) (string, bool, error) {
+			current, _ := config.Load(cfgPath) // a half-valid state still lets one repository be tested
+			return checkRepository(ctx, current, id, gc, tokens, apps)
+		},
+	}).register(adminMux)
+
 	var svc *storage.Service
 	for attempt := 1; ; attempt++ {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -252,7 +279,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 			CORSOrigins:  cfg.Server.CORSOrigins,
 		}, log)
 		servers = append(servers, newServer(cfg.Server, cfg.Server.RESTAddr,
-			observability.Middleware("rest", cfg.Server.MaxInFlight, log, api.Handler())))
+			observability.Middleware("rest", cfg.Server.MaxInFlight, log, gate.Wrap(api.Handler()))))
 	}
 	if cfg.Server.Enabled("contentrepo") {
 		cs, err := contentrepo.New(ctx, svc, cfg.ContentServer, cfg.Graph.MetadataCacheTTL, version, log)
@@ -262,7 +289,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		go cs.RefreshCertificates(ctx, time.Minute)
 		cs.RegisterAdmin(adminMux, cfg.Server.AdminToken)
 		servers = append(servers, newServer(cfg.Server, cfg.Server.ContentRepoAddr,
-			observability.Middleware("contentrepo", cfg.Server.MaxInFlight, log, cs.Handler())))
+			observability.Middleware("contentrepo", cfg.Server.MaxInFlight, log, gate.Wrap(cs.Handler()))))
 	}
 	if len(servers) == 0 {
 		return errors.New("no interfaces enabled (server.interfaces)")
@@ -279,7 +306,11 @@ func run(cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	ready.Store(false)
-	sctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	shutdownFor := cfg.Server.ShutdownTimeout
+	if restarting.Load() {
+		shutdownFor = 2 * time.Second // the drain already waited; whatever still runs is cut
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), shutdownFor)
 	defer cancel()
 	var wg sync.WaitGroup
 	for _, s := range append(servers, admin) {
@@ -310,8 +341,15 @@ func readinessLoop(ctx context.Context, svc *storage.Service, ready *atomic.Bool
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		err := svc.Ping(cctx)
+		if len(svc.Repositories()) == 0 {
+			err = errNoRepositories
+		}
 		if err != nil {
-			status.Store("not ready: SharePoint check failed: " + safelog.Redact(safelog.OneLine(readinessReason(err))))
+			if errors.Is(err, errNoRepositories) {
+				status.Store("not ready: no repository is configured yet; add one with `zaks-drive repo add`")
+			} else {
+				status.Store("not ready: repository check failed: " + safelog.Redact(safelog.OneLine(readinessReason(err))))
+			}
 		} else {
 			status.Store("ready")
 		}
@@ -539,3 +577,7 @@ func (a *appClients) checkResolver(rc config.RepositoryConfig) (*graph.Client, a
 	c := a.get(rc)
 	return c.gc, c.tokens
 }
+
+// errNoRepositories is the readiness failure of a server whose state
+// directory has no repository yet.
+var errNoRepositories = errors.New("no repository configured")

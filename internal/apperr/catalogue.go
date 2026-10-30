@@ -278,6 +278,25 @@ var (
 	CLIAdminRouteMissing = def(AreaCLI, "CLI_ADMIN_ROUTE_MISSING", 0, "Certificate administration is not available",
 		"The admin endpoint answered 404: the `contentrepo` interface is not enabled, or the adapter is still starting.",
 		"Enable `contentrepo` in `server.interfaces`, wait for /readyz, and retry.")
+	AdminTokenRequired = def(AreaCLI, "ADMIN_TOKEN_REQUIRED", 503, "Repository administration needs an ADMIN_TOKEN",
+		"Changing repositories writes secrets, so the admin API refuses to work without an `ADMIN_TOKEN` (the certificate endpoints only check it when set).",
+		"Set ADMIN_TOKEN in deploy/.env to a long random value and recreate the container.")
+	AdminStateUnavailable = def(AreaCLI, "ADMIN_STATE_UNAVAILABLE", 503, "No state directory",
+		"Managed repositories live in the state directory (`server.stateDir`, STATE_DIR), which is not configured or cannot be written.",
+		"Use the supplied compose file, which mounts the `state` volume at /var/lib/zaks-drive and sets STATE_DIR, or set `server.stateDir`.")
+	AdminRepoNotFound = def(AreaCLI, "ADMIN_REPO_NOT_FOUND", 404, "No such managed repository",
+		"There is no repository with that ID in the state directory.", "`zaks-drive repo list` shows the repositories.")
+	AdminRepoExists = def(AreaCLI, "ADMIN_REPO_EXISTS", 409, "Repository already exists",
+		"A repository with that ID exists, in config.yaml or as a managed repository.", "Choose another ID, or update the existing repository.")
+	AdminRepoStatic = def(AreaCLI, "ADMIN_REPO_STATIC", 409, "Repository comes from config.yaml",
+		"Repositories defined in config.yaml are read-only for the management tools.", "Edit config.yaml and recreate the container, or move the repository into the managed set.")
+	AdminRepoInUse = def(AreaCLI, "ADMIN_REPO_IN_USE", 409, "Repository is exposed to SAP",
+		"The repository has an `sap` block, so SAP may still hold references to documents stored in it. Detaching it makes them unreachable.",
+		"Remove it from SAP first, or repeat the command with the explicit `allowInUse` confirmation.")
+	AdminRepoInvalid = def(AreaCLI, "ADMIN_REPO_INVALID", 400, "Repository settings rejected",
+		"The settings do not pass the server's own validation; nothing was changed. The detail names each problem.", "Correct the settings named and retry.")
+	AdminApplyBusy = def(AreaCLI, "ADMIN_APPLY_BUSY", 409, "A restart is already in progress",
+		"The server is already draining requests for a restart.", "Wait for it to finish, or cancel it first.")
 	CertNotReceived = def(AreaCLI, "CERT_NOT_RECEIVED", 400, "No certificate from SAP for this repository",
 		"`activate` / `deactivate` needs a certificate that SAP already sent with putCert for this contRep and authId.",
 		"In OAC0 choose Send certificate, run `adapter certs list`, and use the exact contRep and authId shown.")

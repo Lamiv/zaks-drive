@@ -215,3 +215,68 @@ func TestManagedRepositoryMayNotReuseAStaticID(t *testing.T) {
 		t.Fatalf("a managed repository must not shadow a static one, got %v", err)
 	}
 }
+
+func TestBrokenDefinitionsFallBackToTheLastGoodState(t *testing.T) {
+	cfgPath, state := stateFixture(t, map[string]string{
+		"repos.d/AD.yaml":           "id: AD\nbackend: local\nlocal: { path: AD }\nsap: {}\n",
+		"last-good/repos.d/AD.yaml": "id: AD\nbackend: local\nlocal: { path: AD, versions: 2 }\nsap: {}\n",
+	})
+	// a good state loads normally and is not reported as a fallback
+	cfg, err := Load(cfgPath)
+	if err != nil || cfg.Fallback != "" {
+		t.Fatalf("good state: %v fallback=%q", err, cfg.Fallback)
+	}
+	// now break the live definition
+	if err := os.WriteFile(filepath.Join(state, "repos.d", "AD.yaml"), []byte("id: AD\nbackend: local\nlocal: { path: ../x }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(cfgPath)
+	if err != nil {
+		t.Fatalf("a broken change must not stop the server when a last-good state exists: %s", apperr.Format(err))
+	}
+	var ad RepositoryConfig
+	for _, r := range cfg.Repositories {
+		if r.ID == "AD" {
+			ad = r
+		}
+	}
+	if ad.Local.KeepVersions() != 2 || !strings.Contains(cfg.Fallback, "CFG_REPO_LOCAL_INVALID") {
+		t.Fatalf("expected the last-good definition and the reason; got versions=%d fallback=%q", ad.Local.KeepVersions(), cfg.Fallback)
+	}
+}
+
+func TestNoFallbackWithoutASnapshotOrForStaticErrors(t *testing.T) {
+	cfgPath, state := stateFixture(t, map[string]string{
+		"repos.d/AD.yaml": "id: AD\nbackend: local\nlocal: { path: ../x }\n",
+	})
+	if _, err := Load(cfgPath); err == nil {
+		t.Fatal("without a last-good snapshot a broken definition must be reported, not hidden")
+	}
+	// an error in config.yaml itself is not masked by a snapshot
+	if err := os.MkdirAll(filepath.Join(state, "last-good", "repos.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("server: { interfaces: [ftp], stateDir: \""+filepath.ToSlash(state)+"\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err == nil || cfg.Fallback != "" {
+		t.Fatalf("a broken config.yaml must fail: %v", err)
+	}
+}
+
+func TestServerWithoutRepositoriesMayStartOnlyWithAStateDirectory(t *testing.T) {
+	t.Setenv("GRAPH_TENANT_ID", "")
+	t.Setenv("GRAPH_CLIENT_ID", "")
+	t.Setenv("GRAPH_CLIENT_SECRET", "")
+	state := t.TempDir()
+	withState := writeCfg(t, "server: { interfaces: [rest, contentrepo], stateDir: \""+filepath.ToSlash(state)+"\" }\nauth: { disabled: true }\n")
+	cfg, err := Load(withState)
+	if err != nil || len(cfg.Repositories) != 0 {
+		t.Fatalf("a server waiting for its first repository must start: %v", err)
+	}
+	without := writeCfg(t, "server: { interfaces: [rest] }\nauth: { disabled: true }\n")
+	if _, err := Load(without); err == nil || !strings.Contains(apperr.Format(err), "CFG_NO_REPOSITORIES") {
+		t.Fatalf("without a state directory zero repositories stays an error: %v", err)
+	}
+}
