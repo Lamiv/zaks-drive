@@ -221,6 +221,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	if tok, err := tokens.Token(ctx); err == nil {
 		log.Info("graph application permissions", "roles", auth.TokenRoles(tok))
 	}
+	defer svc.Close()
 	if err := contentrepo.ReserveFolders(svc, cfg.ContentServer); err != nil {
 		return err
 	}
@@ -228,7 +229,9 @@ func run(cfg config.Config, log *slog.Logger) error {
 	// The "sharepointadapter/cursor" label predates the rename. It is HMAC key material, not a module
 	// path; changing it would invalidate paging cursors that clients still hold.
 	cursorKey := sha256.Sum256([]byte("sharepointadapter/cursor|" + cfg.Graph.TenantID + "|" + cfg.Graph.ClientID + "|" + cfg.Graph.ClientSecret))
-	svc.SetCursorKey(cursorKey[:])
+	if cfg.Graph.ClientSecret != "" { // without global credentials (local repositories only) the random per-process key stays
+		svc.SetCursorKey(cursorKey[:])
+	}
 
 	authn, err := auth.NewAuthenticator(cfg.Auth, &http.Client{Timeout: 15 * time.Second})
 	if err != nil {

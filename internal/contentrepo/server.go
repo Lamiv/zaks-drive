@@ -61,8 +61,11 @@ func New(ctx context.Context, svc *storage.Service, cfg config.ContentServerConf
 		// the content server owns it and uses an unrestricted handle.
 		repo := shared.Unrestricted()
 		s.reps[rc.ContRep] = &contentRep{id: rc.ContRep, cfg: rc, repo: repo, folder: rc.Folder, shards: map[string]bool{}}
-		log.Info("content repository: SAP documents are stored here", "contRep", rc.ContRep,
-			"location", strings.TrimRight(repo.WebURL, "/")+"/"+strings.Trim(repo.RootPath+"/"+rc.Folder, "/"))
+		location := strings.TrimRight(repo.WebURL, "/") + "/" + strings.Trim(repo.RootPath+"/"+rc.Folder, "/")
+		if repo.Kind() == "local" {
+			location = "local folder of repository " + rc.Repository + ", below " + rc.Folder
+		}
+		log.Info("content repository: SAP documents are stored here", "contRep", rc.ContRep, "location", location)
 		s.order = append(s.order, rc.ContRep)
 	}
 	for _, cidr := range cfg.AllowedNetworks {

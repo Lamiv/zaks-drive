@@ -138,9 +138,9 @@ Promise: **single instance, bounded versions.** One server instance owns a local
 | Location | `<data root>/<path>`; the data root is `/var/lib/zaks-drive/data` (a volume) by default. A repository may instead use a **host folder** the administrator mounts into the container; the command prints the exact Compose mount and checks that the container user can write to it |
 | Confinement | Every operation goes through `os.Root`: no `..`, no escaping through links. Symbolic links in the store are refused |
 | IDs | Opaque, stable for a path: a URL-safe encoding of the repository-relative path. There is no rename or move, so the ID cannot go stale |
-| ETags | Derived from size, modification time and a per-file generation counter kept in a hidden sidecar; `If-Match` behaves as on SharePoint (412 on mismatch) |
+| ETags | Derived from the modification time and size. Every write sets a modification time strictly newer than the previous one (even on a coarse file-system clock), so the time acts as the file's generation and no sidecar is needed; `If-Match` behaves as on SharePoint (412 on mismatch) |
 | Writes | Temporary file in the same directory, `fsync`, atomic rename; per-path locks; uploads of unknown size spool to the existing spool directory first |
-| Versions | The last *N* versions (default 5, configurable, `0` disables) are moved to a hidden `.versions/` folder on replace; `GET .../versions` lists them. Older ones are pruned |
+| Versions | The last *N* versions (default 5, configurable, `0` disables) are kept in a hidden `.versions/` folder on replace (a hard link, so the file is never missing while it is replaced); `GET .../versions` lists them. Older ones are pruned |
 | Search | File-name search by walking the tree, bounded by a limit; no content search |
 | Thumbnails, redirect downloads | Not supported (declared in `Capabilities()`) |
 | Names and paths | Linux file name limit (255 bytes); the same forbidden-character handling as SharePoint, so a document ID is the same on both backends |

@@ -160,13 +160,25 @@ type Service struct {
 	cursorKey []byte
 }
 
-func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs []config.RepositoryConfig, cacheTTL time.Duration, log *slog.Logger) (*Service, error) {
+func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs []config.RepositoryConfig, cacheTTL time.Duration, log *slog.Logger) (svc *Service, err error) {
 	s := &Service{eng: eng, repos: map[string]*Repository{}, cache: newItemCache(cacheTTL, 20000), log: log}
 	s.cursorKey = make([]byte, 32)
 	_, _ = rand.Read(s.cursorKey)
+	defer func() {
+		if err != nil {
+			s.Close() // do not leak folder handles when start-up is retried
+		}
+	}()
 	for _, rc := range cfgs {
 		if rc.Backend == config.BackendLocal {
-			return nil, fmt.Errorf("repository %s: the local backend is not available yet", rc.ID)
+			lb, err := newLocalBackend(rc.LocalRoot, rc.Local.KeepVersions(), eng)
+			if err != nil {
+				return nil, fmt.Errorf("repository %s: %w", rc.ID, err)
+			}
+			s.repos[rc.ID] = &Repository{ID: rc.ID, DriveID: "local:" + rc.ID, ReadOnly: rc.ReadOnly, backend: lb}
+			s.order = append(s.order, rc.ID)
+			log.Info("repository ready: documents are stored here", "repository", rc.ID, "backend", "local", "folder", rc.LocalRoot)
+			continue
 		}
 		drive := rc.DriveID
 		if drive == "" {
@@ -238,7 +250,7 @@ func mapErr(err error) error {
 // Get returns item metadata (including a fresh-enough download URL) for an
 // item inside repo. Results are cached briefly.
 func (s *Service) Get(ctx context.Context, repo *Repository, id string) (*Item, error) {
-	if it := s.cache.get(repo.DriveID, id); it != nil {
+	if it := s.cacheGet(repo, id); it != nil {
 		if repo.visible(it) {
 			return it, nil
 		}
@@ -254,7 +266,7 @@ func (s *Service) Get(ctx context.Context, repo *Repository, id string) (*Item, 
 	if !repo.visible(it) {
 		return nil, notFound("item %s exists in the library but is not inside repository %q (root folder %q)", id, repo.ID, repo.RootPath)
 	}
-	s.cache.put(repo.DriveID, it)
+	s.cachePut(repo, it)
 	return it, nil
 }
 
@@ -276,7 +288,7 @@ func (s *Service) GetByPath(ctx context.Context, repo *Repository, rel string) (
 	if err != nil {
 		return nil, err
 	}
-	s.cache.put(repo.DriveID, it)
+	s.cachePut(repo, it)
 	return it, nil
 }
 
@@ -595,4 +607,29 @@ func (c *itemCache) drop(drive, id string) {
 	c.mu.Unlock()
 }
 
-func init() { safelog.Allow(ErrNotFound, ErrReadOnly, ErrInvalid, ErrReserved) }
+func init() {
+	safelog.Allow(ErrNotFound, ErrReadOnly, ErrInvalid, ErrReserved, ErrConflict, ErrPrecondition)
+}
+
+func (s *Service) cacheGet(repo *Repository, id string) *Item {
+	if !repo.backend.Capabilities().MetadataCache {
+		return nil
+	}
+	return s.cache.get(repo.DriveID, id)
+}
+
+func (s *Service) cachePut(repo *Repository, it *Item) {
+	if repo.backend.Capabilities().MetadataCache {
+		s.cache.put(repo.DriveID, it)
+	}
+}
+
+// Close releases what the repositories' backends hold open (the folder
+// handles of local repositories).
+func (s *Service) Close() {
+	for _, r := range s.repos {
+		if c, ok := r.backend.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
+}

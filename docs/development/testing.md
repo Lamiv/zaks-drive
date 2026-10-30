@@ -16,12 +16,14 @@ All of these run in CI ([`.github/workflows/ci.yml`](../../.github/workflows/ci.
 | Configuration | `internal/config` | Defaults, environment overrides, every validation message |
 | Error catalogue | `internal/apperr` | Codes, formatting, and that `docs/error-codes.md` is current |
 | Graph client | `internal/graph` | Retries, throttling, error classification, drive resolution (site, library, user drive) |
-| Storage and transfer | `internal/storage`, `internal/transfer` | Names and limits, paging cursors, uploads, upload sessions, memory budget |
+| Storage and transfer | `internal/storage`, `internal/transfer` | Names and limits, paging cursors, uploads, upload sessions, memory budget; the local backend (confinement, links, ETags, versions, ranges, concurrent writers) |
 | REST API | `internal/restapi` | Routes, authentication, permissions, conditional requests, ranges, problem responses |
 | Content Server | `internal/contentrepo` | Every command, secKey verification for DSA, RSA and ECDSA, certificates, modes, rollback, concurrency, partial failures, reserved folder; benchmarks for signature cost |
 | Emulator | `internal/graphmock` | Used by the tests above |
 
 All of them run against `internal/graphmock`, not against Microsoft. Passing tests prove the code's behaviour against the emulator's model of Graph.
+
+The REST and Content Server suites also run over the **local backend**: `ZAKS_TEST_BACKEND=local go test ./internal/restapi/... ./internal/contentrepo/...` (CI does this on every change). The few tests that assert SharePoint-only behaviour (the 400-character path limit, redirect downloads, thumbnails, Graph paging links) skip themselves with the reason.
 
 ## The management command and the installer
 

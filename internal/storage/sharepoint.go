@@ -34,7 +34,7 @@ func newSharePointBackend(g *graph.Client, eng *transfer.Engine, drive, root, we
 func (b *sharePointBackend) Kind() string { return "sharepoint" }
 
 func (b *sharePointBackend) Capabilities() Caps {
-	return Caps{Versions: true, Thumbnails: true, RedirectDownload: true}
+	return Caps{Versions: true, Thumbnails: true, RedirectDownload: true, MetadataCache: true}
 }
 
 func (b *sharePointBackend) Ready(ctx context.Context) error { return b.g.Ping(ctx, b.drive) }

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/Lamiv/zaks-drive/internal/apperr"
 	"github.com/Lamiv/zaks-drive/internal/config"
-	"github.com/Lamiv/zaks-drive/internal/graph"
 	"github.com/Lamiv/zaks-drive/internal/safelog"
 	"github.com/Lamiv/zaks-drive/internal/storage"
 )
@@ -495,7 +493,7 @@ func (s *docStore) saveMeta(ctx context.Context, cr *contentRep, docID string, d
 		if err == nil {
 			return nil
 		}
-		if !graph.IsConflict(err) && graph.StatusOf(err) != http.StatusPreconditionFailed {
+		if !storage.IsConflict(err) && !storage.IsPrecondition(err) {
 			return err
 		}
 	}
@@ -546,7 +544,7 @@ func (s *docStore) putComponent(ctx context.Context, cr *contentRep, docID, comp
 		conflict = storage.ConflictFail
 	}
 	it, err := s.svc.Upload(ctx, cr.repo, storage.UploadRequest{Folder: folder, Name: name, Conflict: conflict, Body: body, Size: size})
-	if graph.IsConflict(err) {
+	if storage.IsConflict(err) {
 		if _, gerr := s.svc.GetByPath(ctx, cr.repo, folder+"/"+name); gerr == nil {
 			return nil, compExists(docID, compID)
 		}

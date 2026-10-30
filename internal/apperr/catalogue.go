@@ -92,6 +92,8 @@ var (
 		"The JSON body is missing or malformed.", "Send valid JSON as described in the OpenAPI document (docs/openapi.yaml).")
 	ThumbnailSizeInvalid = def(AreaDoc, "THUMBNAIL_SIZE_INVALID", 400, "Unknown thumbnail size",
 		"`size` must be `small`, `medium` or `large`.", "Use one of the three values.")
+	ThumbnailUnavailable = def(AreaDoc, "THUMBNAIL_UNAVAILABLE", 404, "No thumbnail for this repository",
+		"The repository is stored in a local folder, which does not generate thumbnails (SharePoint repositories do).", "Download the document, or ask for thumbnails only on SharePoint repositories (`capabilities` in the repository list).")
 
 	// ---- SharePoint and Microsoft Graph ----
 	TokenFailed = def(AreaSP, "TOKEN_FAILED", 502, "Cannot obtain a Microsoft access token",

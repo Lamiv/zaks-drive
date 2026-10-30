@@ -155,6 +155,7 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`UPLOAD_BODY_INVALID`](#upload_body_invalid) | 400 | Request body could not be read |
 | [`REQUEST_BODY_INVALID`](#request_body_invalid) | 400 | Request body not valid |
 | [`THUMBNAIL_SIZE_INVALID`](#thumbnail_size_invalid) | 400 | Unknown thumbnail size |
+| [`THUMBNAIL_UNAVAILABLE`](#thumbnail_unavailable) | 404 | No thumbnail for this repository |
 
 ### `DOC_NOT_FOUND`
 
@@ -225,6 +226,13 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** `size` must be `small`, `medium` or `large`.
 - **Fix:** Use one of the three values.
+
+### `THUMBNAIL_UNAVAILABLE`
+
+**No thumbnail for this repository** (HTTP 404)
+
+- **Cause:** The repository is stored in a local folder, which does not generate thumbnails (SharePoint repositories do).
+- **Fix:** Download the document, or ask for thumbnails only on SharePoint repositories (`capabilities` in the repository list).
 
 ## SharePoint and Microsoft Graph
 

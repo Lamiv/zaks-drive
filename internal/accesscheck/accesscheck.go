@@ -111,6 +111,21 @@ func hint(err error) string {
 // everything passed, 1 otherwise.
 func Run(ctx context.Context, cfg config.Config, gc *graph.Client, tokens auth.TokenSource, w io.Writer) int {
 	rep := &reporter{w: w}
+	// Local repositories need no Microsoft access; only SharePoint ones are
+	// checked here (`zaks-drive repo check` tests a local folder).
+	var sharePoint []config.RepositoryConfig
+	for _, r := range cfg.Repositories {
+		if r.Backend == config.BackendLocal {
+			rep.add("["+r.ID+"] local repository", "a writable folder on the server", "not tested by this command", pass,
+				"stored in a local folder; no Microsoft access is needed", "")
+			continue
+		}
+		sharePoint = append(sharePoint, r)
+	}
+	cfg.Repositories = sharePoint
+	if len(sharePoint) == 0 {
+		return rep.summary()
+	}
 	fmt.Fprintf(w, "Access check for %d repositor%s (test files are created and removed again)\n",
 		len(cfg.Repositories), map[bool]string{true: "y", false: "ies"}[len(cfg.Repositories) == 1])
 

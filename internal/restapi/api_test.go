@@ -23,6 +23,7 @@ import (
 	"github.com/Lamiv/zaks-drive/internal/observability"
 	"github.com/Lamiv/zaks-drive/internal/restapi"
 	"github.com/Lamiv/zaks-drive/internal/storage"
+	"github.com/Lamiv/zaks-drive/internal/storage/storagetest"
 	"github.com/Lamiv/zaks-drive/internal/transfer"
 )
 
@@ -49,13 +50,26 @@ func setupWith(t *testing.T, mode string, omitDownloadURL bool) *env {
 	tokens := auth.NewClientCredentials(mock.URL, "tenant", "client", "secret", "https://graph.microsoft.com/.default", mock.Client())
 	gc := graph.New(graph.Options{BaseURL: mock.URL + "/v1.0", MaxConcurrency: 16, MaxRetries: 3, MaxRetryBackoff: 200 * time.Millisecond}, tokens, http.DefaultTransport, log)
 	eng := transfer.New(gc, transfer.Options{SimpleUploadMax: 1 << 20, ChunkSize: 320 << 10, MemoryBudget: 8 << 20, MaxUpload: 50 << 20, SpoolDir: t.TempDir()})
-	svc, err := storage.NewService(context.Background(), gc, eng, []config.RepositoryConfig{
+	repoCfgs := []config.RepositoryConfig{
 		{ID: "DMS", DriveID: "drive1", RootPath: "SAP/DMS"},
 		{ID: "RO", DriveID: "drive1", RootPath: "SAP/RO", ReadOnly: true},
-	}, time.Minute, log)
+	}
+	var seeder graphmock.Seeder = mh.(graphmock.Seeder)
+	dmsDir, roDir := t.TempDir(), t.TempDir()
+	if storagetest.Local() { // the same suite over the local backend
+		repoCfgs = []config.RepositoryConfig{
+			{ID: "DMS", Backend: config.BackendLocal, LocalRoot: dmsDir},
+			{ID: "RO", Backend: config.BackendLocal, LocalRoot: roDir, ReadOnly: true},
+		}
+	}
+	svc, err := storage.NewService(context.Background(), gc, eng, repoCfgs, time.Minute, log)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if storagetest.Local() {
+		seeder = storagetest.Seeder{Svc: svc, Repos: map[string]storagetest.Repo{"SAP/DMS": {ID: "DMS", Dir: dmsDir}, "SAP/RO": {ID: "RO", Dir: roDir}}}
+	}
+	t.Cleanup(svc.Close)
 	// As in production: the SAP content server folder is reserved.
 	if err := svc.ReservePath("DMS", "ContentServer/Z1"); err != nil {
 		t.Fatal(err)
@@ -73,7 +87,7 @@ func setupWith(t *testing.T, mode string, omitDownloadURL bool) *env {
 	t.Cleanup(srv.Close)
 	return &env{
 		url:  srv.URL + "/api/v1",
-		seed: mh.(graphmock.Seeder),
+		seed: seeder,
 		client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
@@ -314,6 +328,9 @@ func TestConflictDeleteSearchFolders(t *testing.T) {
 }
 
 func TestRedirectModeAndThumbnail(t *testing.T) {
+	if storagetest.Local() {
+		t.Skip("a local repository has no pre-authenticated URL to redirect to and no thumbnails; see TestLocalNoThumbnailsButACatalogueCode")
+	}
 	e := setup(t, "redirect")
 	resp := e.do(t, "POST", "/repositories/DMS/documents?fileName=img.png", "rw-key", strings.NewReader("png"), nil)
 	expect(t, resp, 201)

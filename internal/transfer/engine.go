@@ -341,3 +341,6 @@ func (e *Engine) tooLarge(size int64) error {
 }
 
 func init() { safelog.Allow(ErrTooLarge) }
+
+// MaxUpload is the largest accepted upload in bytes (transfer.maxUploadBytes).
+func (e *Engine) MaxUpload() int64 { return e.opts.MaxUpload }

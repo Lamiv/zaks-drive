@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/Lamiv/zaks-drive/internal/graph"
 )
 
 // ErrOutsideRoot is returned by a backend for an item that exists in the
@@ -73,6 +75,9 @@ type Caps struct {
 	Versions         bool
 	Thumbnails       bool
 	RedirectDownload bool
+	// MetadataCache says item metadata may be cached briefly; a local
+	// backend reads its own disk and must not serve stale entries.
+	MetadataCache bool
 }
 
 // Backend stores the documents of one repository. All paths are relative to
@@ -107,4 +112,20 @@ type Backend interface {
 	// closes the body.
 	Open(ctx context.Context, it *Item, rangeHdr string, refresh func(context.Context) (*Item, error)) (*http.Response, error)
 	Thumbnail(ctx context.Context, id, size string) (*http.Response, error)
+}
+
+// Neutral reasons a write can be refused. Backends return errors that wrap
+// them (the SharePoint backend returns Graph errors, which IsConflict and
+// IsPrecondition also recognise).
+var (
+	ErrConflict     = errors.New("an item with that name already exists")
+	ErrPrecondition = errors.New("the item changed since it was read")
+)
+
+// IsConflict reports whether err means "name already exists".
+func IsConflict(err error) bool { return errors.Is(err, ErrConflict) || graph.IsConflict(err) }
+
+// IsPrecondition reports whether err means "If-Match did not match".
+func IsPrecondition(err error) bool {
+	return errors.Is(err, ErrPrecondition) || graph.StatusOf(err) == http.StatusPreconditionFailed
 }
