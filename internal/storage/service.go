@@ -160,7 +160,11 @@ type Service struct {
 	cursorKey []byte
 }
 
-func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs []config.RepositoryConfig, cacheTTL time.Duration, log *slog.Logger) (svc *Service, err error) {
+func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs []config.RepositoryConfig, cacheTTL time.Duration, log *slog.Logger, opts ...Option) (svc *Service, err error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	s := &Service{eng: eng, repos: map[string]*Repository{}, cache: newItemCache(cacheTTL, 20000), log: log}
 	s.cursorKey = make([]byte, 32)
 	_, _ = rand.Read(s.cursorKey)
@@ -180,19 +184,29 @@ func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs
 			log.Info("repository ready: documents are stored here", "repository", rc.ID, "backend", "local", "folder", rc.LocalRoot)
 			continue
 		}
+		gc, en := g, eng
+		if rc.ClientSecretFile != "" {
+			if o.clients == nil {
+				return nil, fmt.Errorf("repository %s has its own credentials but no client factory was given", rc.ID)
+			}
+			var cerr error
+			if gc, en, cerr = o.clients(rc); cerr != nil {
+				return nil, fmt.Errorf("repository %s: %w", rc.ID, cerr)
+			}
+		}
 		drive := rc.DriveID
 		if drive == "" {
 			var err error
-			if drive, err = g.ResolveDrive(ctx, rc.UserID, rc.SiteID, rc.SiteURL, rc.DriveName); err != nil {
+			if drive, err = gc.ResolveDrive(ctx, rc.UserID, rc.SiteID, rc.SiteURL, rc.DriveName); err != nil {
 				return nil, fmt.Errorf("repository %s: resolve drive: %w", rc.ID, err)
 			}
 			log.Info("resolved repository drive", "repository", rc.ID, "drive_id", drive)
 		}
 		repo := &Repository{ID: rc.ID, DriveID: drive, RootPath: rc.RootPath, ReadOnly: rc.ReadOnly}
-		if _, web, err := g.DriveInfo(ctx, drive); err == nil {
+		if _, web, err := gc.DriveInfo(ctx, drive); err == nil {
 			repo.WebURL = web
 		}
-		repo.backend = newSharePointBackend(g, eng, drive, rc.RootPath, repo.WebURL)
+		repo.backend = newSharePointBackend(gc, en, drive, rc.RootPath, repo.WebURL)
 		log.Info("repository ready: documents are stored here", "repository", rc.ID, "library_url", repo.WebURL, "root_path", rc.RootPath)
 		s.repos[rc.ID] = repo
 		s.order = append(s.order, rc.ID)
@@ -633,3 +647,16 @@ func (s *Service) Close() {
 		}
 	}
 }
+
+// ClientFunc returns the Graph client and transfer engine for a repository
+// that has its own Microsoft credentials. It should return the same pair for
+// repositories that use the same application.
+type ClientFunc func(rc config.RepositoryConfig) (*graph.Client, *transfer.Engine, error)
+
+type options struct{ clients ClientFunc }
+
+// Option customises NewService.
+type Option func(*options)
+
+// WithClients supplies the per-credential clients of NewService.
+func WithClients(f ClientFunc) Option { return func(o *options) { o.clients = f } }

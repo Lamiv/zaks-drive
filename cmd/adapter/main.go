@@ -186,10 +186,11 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	// Resolving site/library IDs needs Graph; retry so the container
 	// survives starting before the network or IdP is reachable.
+	apps := newAppClients(cfg, transport, log)
 	var svc *storage.Service
 	for attempt := 1; ; attempt++ {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		s, err := storage.NewService(rctx, gc, engine, cfg.Repositories, cfg.Graph.MetadataCacheTTL, log)
+		s, err := storage.NewService(rctx, gc, engine, cfg.Repositories, cfg.Graph.MetadataCacheTTL, log, storage.WithClients(apps.storageClients(engine)))
 		cancel()
 		if err == nil {
 			svc = s
@@ -471,7 +472,7 @@ func runCheck(cfg config.Config) int {
 		BaseURL: cfg.Graph.BaseURL, MaxConcurrency: cfg.Graph.MaxConcurrency,
 		MaxRetries: cfg.Graph.MaxRetries, MaxRetryBackoff: cfg.Graph.MaxRetryBackoff,
 	}, tokens, transport, log)
-	return accesscheck.Run(ctx, cfg, gc, tokens, os.Stdout)
+	return accesscheck.Run(ctx, cfg, gc, tokens, os.Stdout, newAppClients(cfg, transport, log).checkResolver)
 }
 
 // readinessReason explains a failed readiness check to the operator who calls /readyz:
@@ -481,4 +482,60 @@ func readinessReason(err error) string {
 		return ae.Message()
 	}
 	return safelog.Summary(err)
+}
+
+// appClients creates, once per Microsoft application (tenant, client and
+// secret), a token source and a Graph client with their own concurrency
+// limit and throttle handling, so a throttled tenant does not slow another.
+// Repositories that use the same application share them. The transfer memory
+// budget stays shared (see transfer.Engine.WithClient).
+type appClients struct {
+	cfg       config.Config
+	transport http.RoundTripper
+	log       *slog.Logger
+	mu        sync.Mutex
+	apps      map[string]*appClient
+}
+
+type appClient struct {
+	gc     *graph.Client
+	tokens auth.TokenSource
+}
+
+func newAppClients(cfg config.Config, transport http.RoundTripper, log *slog.Logger) *appClients {
+	return &appClients{cfg: cfg, transport: transport, log: log, apps: map[string]*appClient{}}
+}
+
+func (a *appClients) get(rc config.RepositoryConfig) *appClient {
+	sum := sha256.Sum256([]byte(rc.ClientSecret))
+	key := rc.TenantID + "|" + rc.ClientID + "|" + string(sum[:8])
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if c, ok := a.apps[key]; ok {
+		return c
+	}
+	tokens := auth.NewClientCredentials(a.cfg.Graph.AuthorityURL, rc.TenantID, rc.ClientID, rc.ClientSecret, a.cfg.Graph.Scope,
+		&http.Client{Transport: a.transport, Timeout: 30 * time.Second})
+	c := &appClient{tokens: tokens, gc: graph.New(graph.Options{
+		BaseURL:         a.cfg.Graph.BaseURL,
+		MaxConcurrency:  a.cfg.Graph.MaxConcurrency,
+		MaxRetries:      a.cfg.Graph.MaxRetries,
+		MaxRetryBackoff: a.cfg.Graph.MaxRetryBackoff,
+	}, tokens, a.transport, a.log)}
+	a.apps[key] = c
+	return c
+}
+
+// storageClients is the storage.ClientFunc for repositories with their own credentials.
+func (a *appClients) storageClients(engine *transfer.Engine) storage.ClientFunc {
+	return func(rc config.RepositoryConfig) (*graph.Client, *transfer.Engine, error) {
+		c := a.get(rc)
+		return c.gc, engine.WithClient(c.gc), nil
+	}
+}
+
+// checkResolver is the accesscheck.Resolver for `check`.
+func (a *appClients) checkResolver(rc config.RepositoryConfig) (*graph.Client, auth.TokenSource) {
+	c := a.get(rc)
+	return c.gc, c.tokens
 }

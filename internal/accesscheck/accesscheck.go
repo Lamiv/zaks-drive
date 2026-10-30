@@ -109,7 +109,11 @@ func hint(err error) string {
 
 // Run executes all checks and writes the report to w. It returns 0 when
 // everything passed, 1 otherwise.
-func Run(ctx context.Context, cfg config.Config, gc *graph.Client, tokens auth.TokenSource, w io.Writer) int {
+// Resolver returns the Graph client and token source of a repository that has
+// its own Microsoft application (clientSecretFile set).
+type Resolver func(config.RepositoryConfig) (*graph.Client, auth.TokenSource)
+
+func Run(ctx context.Context, cfg config.Config, gc *graph.Client, tokens auth.TokenSource, w io.Writer, resolve ...Resolver) int {
 	rep := &reporter{w: w}
 	// Local repositories need no Microsoft access; only SharePoint ones are
 	// checked here (`zaks-drive repo check` tests a local folder).
@@ -129,24 +133,68 @@ func Run(ctx context.Context, cfg config.Config, gc *graph.Client, tokens auth.T
 	fmt.Fprintf(w, "Access check for %d repositor%s (test files are created and removed again)\n",
 		len(cfg.Repositories), map[bool]string{true: "y", false: "ies"}[len(cfg.Repositories) == 1])
 
+	// Repositories that use the global graph.* application are checked
+	// together; each repository application of its own is checked separately.
+	var global []config.RepositoryConfig
+	type group struct {
+		gc     *graph.Client
+		tokens auth.TokenSource
+		secret int
+		repos  []config.RepositoryConfig
+	}
+	own := map[string]*group{}
+	var ownOrder []string
+	for _, r := range cfg.Repositories {
+		if r.ClientSecretFile == "" || len(resolve) == 0 {
+			global = append(global, r)
+			continue
+		}
+		key := r.TenantID + "|" + r.ClientID
+		g := own[key]
+		if g == nil {
+			c, t := resolve[0](r)
+			g = &group{gc: c, tokens: t, secret: len(r.ClientSecret)}
+			own[key] = g
+			ownOrder = append(ownOrder, key)
+		}
+		g.repos = append(g.repos, r)
+	}
+	if len(global) > 0 {
+		checkApplication(ctx, rep, "", gc, tokens, len(cfg.Graph.ClientSecret),
+			"graph.tenantId, graph.clientId, graph.clientSecret (the secret VALUE, not its ID)", global)
+	}
+	for _, key := range ownOrder {
+		g := own[key]
+		var ids []string
+		for _, r := range g.repos {
+			ids = append(ids, r.ID)
+		}
+		checkApplication(ctx, rep, "("+strings.Join(ids, ", ")+") own application: ", g.gc, g.tokens, g.secret,
+			"tenantId, clientId and clientSecretFile of the repository", g.repos)
+	}
+	return rep.summary()
+}
+
+// checkApplication runs the credential, token and permission checks of one
+// Microsoft application, then the access checks of the repositories that use it.
+func checkApplication(ctx context.Context, rep *reporter, label string, gc *graph.Client, tokens auth.TokenSource, secretLen int, credRequired string, repos []config.RepositoryConfig) {
 	// 1. credentials
-	rep.add("Credentials configured",
-		"graph.tenantId, graph.clientId, graph.clientSecret (the secret VALUE, not its ID)",
-		fmt.Sprintf("config values (secret length %d, never printed)", len(cfg.Graph.ClientSecret)), pass, "", "")
+	rep.add(label+"Credentials configured", credRequired,
+		fmt.Sprintf("config values (secret length %d, never printed)", secretLen), pass, "", "")
 
 	// 2. token
 	const tokReq = "valid tenant ID, client ID and unexpired secret"
 	const tokTest = "client-credentials token request to Microsoft Entra ID"
 	token, err := tokens.Token(ctx)
 	if err != nil {
-		rep.add("Access token from Microsoft Entra ID", tokReq, tokTest, fail, detail(err), hint(err))
-		rep.skip("Application permission in the token", "a Graph APPLICATION permission with admin consent", "token 'roles' claim", "token")
-		for _, r := range cfg.Repositories {
+		rep.add(label+"Access token from Microsoft Entra ID", tokReq, tokTest, fail, detail(err), hint(err))
+		rep.skip(label+"Application permission in the token", "a Graph APPLICATION permission with admin consent", "token 'roles' claim", "token")
+		for _, r := range repos {
 			rep.skip("["+r.ID+"] all access checks", "see below", "-", "token")
 		}
-		return rep.summary()
+		return
 	}
-	rep.add("Access token from Microsoft Entra ID", tokReq, tokTest, pass, "", "")
+	rep.add(label+"Access token from Microsoft Entra ID", tokReq, tokTest, pass, "", "")
 
 	// 3. roles
 	roles := auth.TokenRoles(token)
@@ -171,15 +219,14 @@ func Run(ctx context.Context, cfg config.Config, gc *graph.Client, tokens auth.T
 	if !hasRole {
 		res = fail
 	}
-	rep.add("Application permission in the token",
+	rep.add(label+"Application permission in the token",
 		"Graph APPLICATION permission (type 'Application', admin consent granted): Sites.Selected + site grant, or Sites.ReadWrite.All, or Files.ReadWrite.All for a OneDrive userId",
 		"token 'roles' claim", res, d,
 		"Entra admin center > App registrations > your app > API permissions: add it as type APPLICATION and click 'Grant admin consent'; wait about a minute")
 
-	for _, repo := range cfg.Repositories {
+	for _, repo := range repos {
 		checkRepo(ctx, rep, gc, repo)
 	}
-	return rep.summary()
 }
 
 func contains(s []string, v string) bool {
