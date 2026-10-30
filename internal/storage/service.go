@@ -165,6 +165,9 @@ func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs
 	s.cursorKey = make([]byte, 32)
 	_, _ = rand.Read(s.cursorKey)
 	for _, rc := range cfgs {
+		if rc.Backend == config.BackendLocal {
+			return nil, fmt.Errorf("repository %s: the local backend is not available yet", rc.ID)
+		}
 		drive := rc.DriveID
 		if drive == "" {
 			var err error

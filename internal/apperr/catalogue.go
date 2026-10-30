@@ -246,7 +246,24 @@ var (
 		"`contentServer.repositories[].repository` does not match any `repositories[].id`.", "Use one of the IDs under `repositories:`.")
 	CfgSignatureInvalid = def(AreaConfig, "CFG_SIGNATURE_INVALID", 0, "Unknown signature mode", "`signature` must be `required`, `optional` or `none`.", "Use `required` for production.")
 	CfgNetworkInvalid   = def(AreaConfig, "CFG_NETWORK_INVALID", 0, "Invalid network in allowedNetworks", "An entry is not an IP address or CIDR (for example 10.0.0.0/24).", "Fix the entry.")
-	StartupPortInUse    = def(AreaConfig, "STARTUP_PORT_IN_USE", 0, "A listen port is already in use",
+	CfgRepoIDInvalid    = def(AreaConfig, "CFG_REPO_ID_INVALID", 0, "Repository ID not allowed",
+		"Repositories managed through `zaks-drive repo` (files in the state directory's `repos.d`) have an ID of exactly 2 characters, A-Z or 0-9, the length of an SAP content repository ID, and the file must be named `<id>.yaml`.",
+		"Rename the repository, for example `ZH` or `A1`.")
+	CfgRepoBackendInvalid = def(AreaConfig, "CFG_REPO_BACKEND_INVALID", 0, "Unknown repository backend",
+		"`backend` must be `sharepoint` or `local`; a local repository also needs `server.stateDir`.", "Fix the value, and set `server.stateDir` (STATE_DIR) for local repositories.")
+	CfgRepoLocalInvalid = def(AreaConfig, "CFG_REPO_LOCAL_INVALID", 0, "Local repository settings not usable",
+		"`local.path` is missing, absolute, or contains `..`; or `local.versions` is outside 0 to 99. A local repository's path is relative to the data folder in the state directory.",
+		"Use a short relative folder name such as `AD`, and a `versions` number from 0 to 99 (default 5).")
+	CfgRepoCredentialsIncomplete = def(AreaConfig, "CFG_REPO_CREDENTIALS_INCOMPLETE", 0, "Repository credentials incomplete",
+		"A repository with its own Microsoft application needs `tenantId`, `clientId` and `clientSecretFile` together, and the other backend types take none of them.",
+		"Set all three, or none to use the global `graph.*` credentials.")
+	CfgRepoSecretUnreadable = def(AreaConfig, "CFG_REPO_SECRET_UNREADABLE", 0, "Repository secret file not usable",
+		"`clientSecretFile` must be a file below `secrets/` in the state directory, readable by the server, empty-free, and (on Linux) not accessible to group or others (mode 600).",
+		"Recreate the secret with `zaks-drive repo update <id>`, or `chmod 600` the file inside the state volume.")
+	CfgRepoFileInvalid = def(AreaConfig, "CFG_REPO_FILE_INVALID", 0, "Repository definition file not usable",
+		"A file in the state directory's `repos.d` is not valid YAML, has an unknown setting, is too large, or is not named after its repository ID.",
+		"Fix the file named in the detail, or remove it. The server keeps the last working state when a change fails to load.")
+	StartupPortInUse = def(AreaConfig, "STARTUP_PORT_IN_USE", 0, "A listen port is already in use",
 		"Another program (for example Cockpit on 9090) or another container already uses the address.",
 		"Set REST_PORT, CS_PORT or ADMIN_PORT in deploy/.env to a free host port and recreate the container. `ss -ltnp | grep :<port>` shows who holds it.")
 	StartupRepositoryFailed = def(AreaConfig, "STARTUP_REPOSITORY_FAILED", 0, "Cannot reach the configured SharePoint location",

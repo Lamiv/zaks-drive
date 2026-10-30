@@ -35,6 +35,8 @@ type Config struct {
 	// environment variable is empty or unset; used to explain validation
 	// errors ("SHAREPOINT_SITE_URL is empty") instead of a bare "missing".
 	emptyRefs map[string]bool
+	// repoErrs are problems found while reading the state directory; Validate reports them.
+	repoErrs []error
 }
 
 type ContentServerConfig struct {
@@ -77,6 +79,9 @@ type ServerConfig struct {
 	// AdminToken, when set, is required (Bearer) for mutating admin
 	// endpoints such as certificate activation.
 	AdminToken string `yaml:"adminToken"`
+	// StateDir holds repository definitions (repos.d), their secrets and the
+	// data of local repositories. Empty disables managed repositories.
+	StateDir string `yaml:"stateDir"`
 }
 
 type GraphConfig struct {
@@ -153,6 +158,41 @@ type RepositoryConfig struct {
 	DriveName string `yaml:"driveName"`
 	RootPath  string `yaml:"rootPath"`
 	ReadOnly  bool   `yaml:"readOnly"`
+
+	Description string `yaml:"description"`
+	// Backend is "sharepoint" (default) or "local".
+	Backend string `yaml:"backend"`
+	// Local holds the settings of a local-folder repository.
+	Local LocalConfig `yaml:"local"`
+	// TenantID, ClientID and ClientSecretFile name an own Microsoft
+	// application for this repository. Omitted: the global graph.* values.
+	// The secret is read from a file below secrets/ in the state directory.
+	TenantID         string `yaml:"tenantId"`
+	ClientID         string `yaml:"clientId"`
+	ClientSecretFile string `yaml:"clientSecretFile"`
+	// SAP exposes the repository as an SAP content repository.
+	SAP *RepositorySAPConfig `yaml:"sap"`
+
+	// Filled in by the loader, never read from YAML.
+	Source       string `yaml:"-"` // "static" (config.yaml) or "managed" (repos.d)
+	LocalRoot    string `yaml:"-"` // absolute folder of a local repository
+	ClientSecret string `yaml:"-"` // content of ClientSecretFile
+}
+
+// LocalConfig configures a repository stored in a folder on the server.
+type LocalConfig struct {
+	// Path is relative to the data folder of the state directory.
+	Path string `yaml:"path"`
+	// Versions is how many previous versions are kept per file (0 to 99,
+	// default 5; 0 keeps none).
+	Versions *int `yaml:"versions"`
+}
+
+// RepositorySAPConfig is the SAP content repository side of a repository.
+type RepositorySAPConfig struct {
+	// ContRep defaults to the repository ID.
+	ContRep   string `yaml:"contRep"`
+	Signature string `yaml:"signature"`
 }
 
 type LogConfig struct {
@@ -222,7 +262,11 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyEnv(&cfg)
+	cfg.loadManaged()
 	normalize(&cfg)
+	for i := range cfg.Repositories {
+		cfg.repoErrs = append(cfg.repoErrs, cfg.resolveRepository(&cfg.Repositories[i])...)
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -233,6 +277,7 @@ func applyEnv(c *Config) {
 		}
 	}
 	str("ADMIN_TOKEN", &c.Server.AdminToken)
+	str("STATE_DIR", &c.Server.StateDir)
 	str("GRAPH_TENANT_ID", &c.Graph.TenantID)
 	str("GRAPH_CLIENT_ID", &c.Graph.ClientID)
 	str("GRAPH_CLIENT_SECRET", &c.Graph.ClientSecret)
@@ -273,6 +318,16 @@ func normalize(c *Config) {
 	if c.ContentServer.ClockSkew == 0 {
 		c.ContentServer.ClockSkew = 5 * time.Minute
 	}
+	for i := range c.Repositories {
+		r := &c.Repositories[i]
+		if r.Backend == "" {
+			r.Backend = BackendSharePoint
+		}
+		if r.Source == "" {
+			r.Source = SourceStatic
+		}
+	}
+	c.expandSAP()
 	for i := range c.ContentServer.Repositories {
 		r := &c.ContentServer.Repositories[i]
 		if r.Folder == "" {
@@ -325,6 +380,8 @@ func (c Config) Validate() error {
 	var errs []error
 	add := func(e *apperr.Error) { errs = append(errs, e) }
 
+	errs = append(errs, c.repoErrs...)
+
 	var missing []string
 	for _, f := range []struct{ val, key, env string }{
 		{c.Graph.TenantID, "graph.tenantId", "GRAPH_TENANT_ID"},
@@ -335,7 +392,7 @@ func (c Config) Validate() error {
 			missing = append(missing, f.key+" ("+f.env+")")
 		}
 	}
-	if len(missing) > 0 {
+	if len(missing) > 0 && c.usesGlobalGraph() {
 		add(apperr.New(apperr.CfgGraphCredentials, "empty: %s%s", strings.Join(missing, ", "),
 			c.emptyNote("GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET")))
 	}
@@ -363,16 +420,7 @@ func (c Config) Validate() error {
 			add(apperr.New(apperr.CfgRepoIDDuplicate, "repository id %q is used more than once", r.ID))
 		}
 		seen[r.ID] = true
-		if r.DriveID == "" && r.UserID == "" && r.SiteID == "" && r.SiteURL == "" {
-			add(apperr.New(apperr.CfgRepoLocationMissing,
-				"repository %q has no SharePoint location: siteUrl, userId, siteId and driveId are all empty%s", name,
-				c.emptyNote("SHAREPOINT_SITE_URL", "SHAREPOINT_USER_ID", "SP_DRIVE_ID")))
-		}
-		if r.SiteURL != "" {
-			if why := siteURLProblem(r.SiteURL); why != "" {
-				add(apperr.New(apperr.CfgSiteURLInvalid, "repository %q: siteUrl %q %s", name, r.SiteURL, why))
-			}
-		}
+		c.validateRepository(name, r, add)
 	}
 
 	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 {

@@ -628,6 +628,12 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`CFG_CONTREP_REPOSITORY_UNKNOWN`](#cfg_contrep_repository_unknown) | — | contRep points to an unknown repository |
 | [`CFG_SIGNATURE_INVALID`](#cfg_signature_invalid) | — | Unknown signature mode |
 | [`CFG_NETWORK_INVALID`](#cfg_network_invalid) | — | Invalid network in allowedNetworks |
+| [`CFG_REPO_ID_INVALID`](#cfg_repo_id_invalid) | — | Repository ID not allowed |
+| [`CFG_REPO_BACKEND_INVALID`](#cfg_repo_backend_invalid) | — | Unknown repository backend |
+| [`CFG_REPO_LOCAL_INVALID`](#cfg_repo_local_invalid) | — | Local repository settings not usable |
+| [`CFG_REPO_CREDENTIALS_INCOMPLETE`](#cfg_repo_credentials_incomplete) | — | Repository credentials incomplete |
+| [`CFG_REPO_SECRET_UNREADABLE`](#cfg_repo_secret_unreadable) | — | Repository secret file not usable |
+| [`CFG_REPO_FILE_INVALID`](#cfg_repo_file_invalid) | — | Repository definition file not usable |
 | [`STARTUP_PORT_IN_USE`](#startup_port_in_use) | — | A listen port is already in use |
 | [`STARTUP_REPOSITORY_FAILED`](#startup_repository_failed) | — | Cannot reach the configured SharePoint location |
 
@@ -770,6 +776,48 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** An entry is not an IP address or CIDR (for example 10.0.0.0/24).
 - **Fix:** Fix the entry.
+
+### `CFG_REPO_ID_INVALID`
+
+**Repository ID not allowed** (HTTP —)
+
+- **Cause:** Repositories managed through `zaks-drive repo` (files in the state directory's `repos.d`) have an ID of exactly 2 characters, A-Z or 0-9, the length of an SAP content repository ID, and the file must be named `<id>.yaml`.
+- **Fix:** Rename the repository, for example `ZH` or `A1`.
+
+### `CFG_REPO_BACKEND_INVALID`
+
+**Unknown repository backend** (HTTP —)
+
+- **Cause:** `backend` must be `sharepoint` or `local`; a local repository also needs `server.stateDir`.
+- **Fix:** Fix the value, and set `server.stateDir` (STATE_DIR) for local repositories.
+
+### `CFG_REPO_LOCAL_INVALID`
+
+**Local repository settings not usable** (HTTP —)
+
+- **Cause:** `local.path` is missing, absolute, or contains `..`; or `local.versions` is outside 0 to 99. A local repository's path is relative to the data folder in the state directory.
+- **Fix:** Use a short relative folder name such as `AD`, and a `versions` number from 0 to 99 (default 5).
+
+### `CFG_REPO_CREDENTIALS_INCOMPLETE`
+
+**Repository credentials incomplete** (HTTP —)
+
+- **Cause:** A repository with its own Microsoft application needs `tenantId`, `clientId` and `clientSecretFile` together, and the other backend types take none of them.
+- **Fix:** Set all three, or none to use the global `graph.*` credentials.
+
+### `CFG_REPO_SECRET_UNREADABLE`
+
+**Repository secret file not usable** (HTTP —)
+
+- **Cause:** `clientSecretFile` must be a file below `secrets/` in the state directory, readable by the server, empty-free, and (on Linux) not accessible to group or others (mode 600).
+- **Fix:** Recreate the secret with `zaks-drive repo update <id>`, or `chmod 600` the file inside the state volume.
+
+### `CFG_REPO_FILE_INVALID`
+
+**Repository definition file not usable** (HTTP —)
+
+- **Cause:** A file in the state directory's `repos.d` is not valid YAML, has an unknown setting, is too large, or is not named after its repository ID.
+- **Fix:** Fix the file named in the detail, or remove it. The server keeps the last working state when a change fails to load.
 
 ### `STARTUP_PORT_IN_USE`
 
