@@ -21,7 +21,12 @@ See the [README feature table](../README.md#what-is-verified) for the evidence b
 
 ## Proposed by the community
 
-None yet. Have an idea? Start a discussion or write an [RFC](rfcs/README.md). Accepted proposals will be listed here with a link; being listed does not mean scheduled.
+Drafts for discussion, not approved or scheduled:
+
+- [RFC 0001](rfcs/0001-repositories-and-storage-backends.md): several repositories (`Z1`, `ZH`, `AD`, ...), each with a local-folder or SharePoint backend and its own settings and secrets, managed from `zaks-drive repo ...`.
+- [RFC 0002](rfcs/0002-server-admin-ui.md): an admin UI built into the server for repositories, certificates and diagnostics.
+
+Have an idea of your own? Start a discussion or write an [RFC](rfcs/README.md). Accepted proposals will be listed here with a link; being listed does not mean scheduled.
 
 ## Seeking contributors
 
