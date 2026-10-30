@@ -94,8 +94,9 @@ func (m *Manager) clock() time.Time {
 	return time.Now()
 }
 
-func secretPath(id string) string { return path.Join(config.SecretsDir, id, "client-secret") }
-func repoPath(id string) string   { return path.Join(config.ReposDir, id+".yaml") }
+func secretPath(id string) string   { return path.Join(config.SecretsDir, id, "client-secret") }
+func repoPath(id string) string     { return path.Join(config.ReposDir, id+".yaml") }
+func detachedPath(id string) string { return path.Join(config.DetachedDir, id+".yaml") }
 
 const (
 	auditFile   = "audit.log"
@@ -118,7 +119,7 @@ func (m *Manager) open() (*os.Root, error) {
 	if err != nil {
 		return nil, apperr.New(apperr.AdminStateUnavailable, "cannot open %s: %v", m.StateDir, err).Wrap(err)
 	}
-	for _, d := range []string{config.ReposDir, config.SecretsDir, config.DataDir} {
+	for _, d := range []string{config.ReposDir, config.SecretsDir, config.DataDir, config.DetachedDir} {
 		if err := root.MkdirAll(d, 0o700); err != nil {
 			root.Close()
 			return nil, apperr.New(apperr.AdminStateUnavailable, "cannot create %s in the state directory (is it writable by the server?): %v", d, err).Wrap(err)
@@ -381,6 +382,7 @@ func (m *Manager) write(spec Spec, secret *string, create bool) (View, error) {
 	if create {
 		action = "add"
 	}
+	_ = root.Remove(detachedPath(spec.ID))
 	m.audit(root, action, spec.ID, fmt.Sprintf("backend=%s secret=%s", spec.Backend, secretState(secret, view.SecretSet)))
 	return view, nil
 }
@@ -468,6 +470,9 @@ func (m *Manager) Detach(id string, allowInUse bool) error {
 	if err := yaml.Unmarshal(prevYAML, &spec); err == nil && spec.SAP != nil && !allowInUse {
 		return apperr.New(apperr.AdminRepoInUse, "repository %q is exposed to SAP as content repository %q", id, firstNonEmpty(spec.SAP.ContRep, id))
 	}
+	// Keep the definition (it holds no secret) so the repository can be added
+	// again and, for a local one, its folder can be found for a purge.
+	_ = writeAtomic(root, detachedPath(id), prevYAML, 0o600)
 	if err := root.Remove(repoPath(id)); err != nil {
 		return apperr.New(apperr.AdminStateUnavailable, "cannot remove the definition: %v", err).Wrap(err)
 	}

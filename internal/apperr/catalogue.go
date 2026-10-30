@@ -297,6 +297,14 @@ var (
 		"The settings do not pass the server's own validation; nothing was changed. The detail names each problem.", "Correct the settings named and retry.")
 	AdminApplyBusy = def(AreaCLI, "ADMIN_APPLY_BUSY", 409, "A restart is already in progress",
 		"The server is already draining requests for a restart.", "Wait for it to finish, or cancel it first.")
+	AdminPurgeUnsupported = def(AreaCLI, "ADMIN_PURGE_UNSUPPORTED", 409, "Only detached local repositories can be purged",
+		"A purge deletes the documents of a repository that was detached and stores its documents in a local folder. SharePoint content is never deleted by ZAKS Drive.",
+		"Detach the repository first (`zaks-drive repo remove`). For SharePoint, delete the folder in SharePoint itself; its recycle bin gives a recovery window.")
+	AdminPurgeAttached = def(AreaCLI, "ADMIN_PURGE_ATTACHED", 409, "The repository is still in use",
+		"The repository, or another one using the same folder, is still defined, so the server may be serving the documents.",
+		"Detach it with `zaks-drive repo remove`, restart the server, and run the purge again.")
+	AdminPurgeChallenge = def(AreaCLI, "ADMIN_PURGE_CHALLENGE", 400, "Purge confirmation does not match",
+		"The typed repository ID or the challenge phrase is wrong, expired (valid 15 minutes), belongs to another repository, or the folder changed after the plan was made.", "Run `zaks-drive repo purge <id> --plan` again and use the new phrase.")
 	CertNotReceived = def(AreaCLI, "CERT_NOT_RECEIVED", 400, "No certificate from SAP for this repository",
 		"`activate` / `deactivate` needs a certificate that SAP already sent with putCert for this contRep and authId.",
 		"In OAC0 choose Send certificate, run `adapter certs list`, and use the exact contRep and authId shown.")

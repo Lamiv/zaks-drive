@@ -35,7 +35,10 @@ const (
 	// Layout of the state directory.
 	ReposDir   = "repos.d"
 	SecretsDir = "secrets"
-	DataDir    = "data"
+	// DetachedDir keeps the secret-free definition of each detached repository, so
+	// it can be added again and its local folder found for a purge.
+	DetachedDir = "detached"
+	DataDir     = "data"
 	// LastGoodDir holds a copy of the definitions of the last state that started.
 	LastGoodDir = "last-good"
 

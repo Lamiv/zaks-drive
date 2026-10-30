@@ -90,6 +90,10 @@ type repoAPI struct {
 	applyMu  sync.Mutex
 	cancelCh chan struct{}
 	applying atomic.Bool // set once the drain finished and the shutdown began
+
+	started time.Time
+	// serving returns the IDs of the repositories the server serves.
+	serving func() []string
 }
 
 const (
@@ -191,6 +195,12 @@ type statusBody struct {
 	Draining       bool   `json:"draining"`
 	InFlight       int    `json:"inFlight"`
 	DrainSeconds   int    `json:"drainSeconds"`
+	// StartedAt identifies this run of the server; a changed value after an
+	// apply proves the restart happened.
+	StartedAt time.Time `json:"startedAt"`
+	// Serving lists the repositories the running server serves right now (a
+	// purge must never touch one of them).
+	Serving []string `json:"serving"`
 }
 
 func (a *repoAPI) status(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +212,7 @@ func (a *repoAPI) status(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, http.StatusOK, statusBody{
 		Version: a.version, Ready: a.ready.Load(), PendingRestart: now != a.applied, Fallback: a.fallback,
 		Draining: a.gate.Draining(), InFlight: a.gate.InFlight(), DrainSeconds: int(a.drain.Seconds()),
+		StartedAt: a.started, Serving: a.servingIDs(),
 	})
 }
 
@@ -388,4 +399,14 @@ func (a *repoAPI) cancelApply(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("maintenance mode cancelled; serving again")
 	a.mgr.Audit("apply-cancel", "-", "")
 	writeAPI(w, http.StatusOK, map[string]any{"state": "running"})
+}
+
+func (a *repoAPI) servingIDs() []string {
+	if a.serving == nil {
+		return []string{}
+	}
+	if ids := a.serving(); ids != nil {
+		return ids
+	}
+	return []string{}
 }

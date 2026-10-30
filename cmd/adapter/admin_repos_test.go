@@ -85,7 +85,7 @@ func (e *adminEnv) call(method, path, token, body string) (int, string) {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
 		e.t.Errorf("%s %s: Cache-Control %q; admin responses must not be cached", method, path, cc)
 	}
 	return resp.StatusCode, string(b)
@@ -396,4 +396,70 @@ func TestOneOffCommandRunsTheSameOperations(t *testing.T) {
 func toJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func TestPurgeIsNotAvailableThroughTheAdminAPI(t *testing.T) {
+	e := newAdminEnv(t, testToken)
+	e.call("POST", "/admin/api/v1/repositories", testToken, `{"id":"AD","backend":"local","local":{"path":"AD"}}`)
+	for _, p := range [][2]string{
+		{"POST", "/admin/api/v1/repositories/AD/purge"}, {"DELETE", "/admin/api/v1/repositories/AD/purge"},
+		{"POST", "/admin/api/v1/purge"}, {"DELETE", "/admin/api/v1/repositories/AD/data"}, {"POST", "/admin/api/v1/repositories/AD/purge-plan"},
+	} {
+		if status, _ := e.call(p[0], p[1], testToken, `{}`); status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s answered %d; a purge must not exist remotely", p[0], p[1], status)
+		}
+	}
+	// a plain DELETE of the repository only detaches it and never touches documents
+	if status, body := e.call("DELETE", "/admin/api/v1/repositories/AD", testToken, ""); status != 200 || !strings.Contains(body, `"documentsDeleted": false`) {
+		t.Fatalf("%d %s", status, body)
+	}
+}
+
+func TestOneOffPurgeNeedsTheExplicitFlagAndAMatchingPlan(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	body := "server: { interfaces: [rest], stateDir: \"" + filepath.ToSlash(state) + "\" }\ngraph: { tenantId: t, clientId: c, clientSecret: s }\nauth: { disabled: true }\n" +
+		"repositories:\n  - { id: DMS, siteUrl: \"https://contoso.sharepoint.com/sites/x\" }\n"
+	if err := os.WriteFile(cfgFile, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, v := runRepos(t, cfgFile, `{"id":"AD","backend":"local","local":{"path":"AD"}}`, "add"); code != 0 {
+		t.Fatalf("add: %v", v)
+	}
+	if err := os.MkdirAll(filepath.Join(state, "data", "AD"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "data", "AD", "doc.txt"), []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, v := runRepos(t, cfgFile, "", "purge-plan", "AD"); code != 1 {
+		t.Fatalf("an attached repository cannot be planned: %v", v)
+	}
+	if code, v := runRepos(t, cfgFile, "", "detach", "AD"); code != 0 {
+		t.Fatalf("detach: %v", v)
+	}
+	code, v := runRepos(t, cfgFile, "", "purge-plan", "AD")
+	if code != 0 {
+		t.Fatalf("plan: %v", v)
+	}
+	phrase, _ := v["result"].(map[string]any)["challenge"].(string)
+	if !strings.HasPrefix(phrase, "PURGE-AD-") {
+		t.Fatalf("no challenge: %v", v)
+	}
+	// without the explicit flag nothing is deleted, even with the right phrase
+	if code, _ := runRepos(t, cfgFile, "", "purge", "AD", "--typed-id", "AD", "--challenge", phrase); code != 1 {
+		t.Fatal("a purge without --i-understand-this-destroys-documents must fail")
+	}
+	if code, _ := runRepos(t, cfgFile, "", "purge", "AD", "--typed-id", "AD", "--challenge", "PURGE-AD-0-000000000000", "--i-understand-this-destroys-documents"); code != 1 {
+		t.Fatal("a wrong phrase must fail")
+	}
+	if _, err := os.Stat(filepath.Join(state, "data", "AD", "doc.txt")); err != nil {
+		t.Fatal("a refused purge deleted something")
+	}
+	if code, v := runRepos(t, cfgFile, "", "purge", "AD", "--typed-id", "AD", "--challenge", phrase, "--i-understand-this-destroys-documents"); code != 0 {
+		t.Fatalf("a complete, correct purge must work: %v", v)
+	}
+	if _, err := os.Stat(filepath.Join(state, "data", "AD")); err == nil {
+		t.Fatal("the folder survived a correct purge")
+	}
 }

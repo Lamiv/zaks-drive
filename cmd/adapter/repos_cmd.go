@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,7 +34,9 @@ import (
 //	repos update <id>        (stdin: same shape)
 //	repos detach <id> [--allow-in-use]
 //	repos check <id>
-//	repos audit [lines]
+//	repos detached
+//	repos purge-plan <id>    (local, detached repositories only)
+//	repos purge <id> --typed-id ID --challenge PHRASE --i-understand-this-destroys-documents
 func reposCLI(cfgPath string, args []string) int {
 	out := func(v any, err error) int {
 		enc := json.NewEncoder(os.Stdout)
@@ -98,6 +101,24 @@ func reposCLI(cfgPath string, args []string) int {
 			return out(nil, err)
 		}
 		return out(map[string]any{"detached": id, "documentsDeleted": false}, nil)
+	case "detached":
+		specs, err := mgr.Detached()
+		return out(map[string]any{"value": specs}, err)
+	case "purge-plan":
+		return out(mgr.PurgePlan(id))
+	case "purge":
+		// Only here, never in the admin API: shell access to the Docker host is
+		// required. The safeguards are enforced by repoadmin; the explicit flag
+		// is checked here as well so no caller can leave it out.
+		fset := flag.NewFlagSet("purge", flag.ContinueOnError)
+		fset.SetOutput(io.Discard)
+		typed := fset.String("typed-id", "", "")
+		phrase := fset.String("challenge", "", "")
+		understood := fset.Bool("i-understand-this-destroys-documents", false, "")
+		if err := fset.Parse(args[2:]); err != nil || !*understood {
+			return out(nil, apperr.New(apperr.AdminPurgeChallenge, "a purge needs --typed-id, --challenge and --i-understand-this-destroys-documents"))
+		}
+		return out(mgr.Purge(id, *typed, *phrase))
 	case "audit":
 		n := 100
 		if len(args) > 1 {

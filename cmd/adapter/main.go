@@ -202,11 +202,21 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 	// Resolving site/library IDs needs Graph; retry so the container
 	// survives starting before the network or IdP is reachable.
 	apps := newAppClients(cfg, transport, log)
+	var serving atomic.Pointer[storage.Service] // set once the repositories are resolved
 	// Repository administration works from the first moment, also while the
 	// repositories cannot be resolved yet, so a broken change can be repaired.
 	(&repoAPI{
 		mgr: mgr, token: cfg.Server.AdminToken, applied: applied, fallback: cfg.Fallback, gate: gate, ready: &ready,
-		version: version, drain: cfg.Server.DrainTimeout, log: log,
+		version: version, drain: cfg.Server.DrainTimeout, log: log, started: time.Now().UTC(),
+		serving: func() []string {
+			var ids []string
+			if s := serving.Load(); s != nil {
+				for _, r := range s.Repositories() {
+					ids = append(ids, r.ID)
+				}
+			}
+			return ids
+		},
 		stop: func() { restarting.Store(true); stop() },
 		check: func(ctx context.Context, id string) (string, bool, error) {
 			current, _ := config.Load(cfgPath) // a half-valid state still lets one repository be tested
@@ -221,6 +231,7 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 		cancel()
 		if err == nil {
 			svc = s
+			serving.Store(s)
 			break
 		}
 		if ctx.Err() != nil {

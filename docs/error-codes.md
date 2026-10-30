@@ -855,6 +855,9 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`ADMIN_REPO_IN_USE`](#admin_repo_in_use) | 409 | Repository is exposed to SAP |
 | [`ADMIN_REPO_INVALID`](#admin_repo_invalid) | 400 | Repository settings rejected |
 | [`ADMIN_APPLY_BUSY`](#admin_apply_busy) | 409 | A restart is already in progress |
+| [`ADMIN_PURGE_UNSUPPORTED`](#admin_purge_unsupported) | 409 | Only detached local repositories can be purged |
+| [`ADMIN_PURGE_ATTACHED`](#admin_purge_attached) | 409 | The repository is still in use |
+| [`ADMIN_PURGE_CHALLENGE`](#admin_purge_challenge) | 400 | Purge confirmation does not match |
 | [`CERT_NOT_RECEIVED`](#cert_not_received) | 400 | No certificate from SAP for this repository |
 | [`CERT_REQUEST_INVALID`](#cert_request_invalid) | 400 | Admin request body not valid |
 
@@ -927,6 +930,27 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** The server is already draining requests for a restart.
 - **Fix:** Wait for it to finish, or cancel it first.
+
+### `ADMIN_PURGE_UNSUPPORTED`
+
+**Only detached local repositories can be purged** (HTTP 409)
+
+- **Cause:** A purge deletes the documents of a repository that was detached and stores its documents in a local folder. SharePoint content is never deleted by ZAKS Drive.
+- **Fix:** Detach the repository first (`zaks-drive repo remove`). For SharePoint, delete the folder in SharePoint itself; its recycle bin gives a recovery window.
+
+### `ADMIN_PURGE_ATTACHED`
+
+**The repository is still in use** (HTTP 409)
+
+- **Cause:** The repository, or another one using the same folder, is still defined, so the server may be serving the documents.
+- **Fix:** Detach it with `zaks-drive repo remove`, restart the server, and run the purge again.
+
+### `ADMIN_PURGE_CHALLENGE`
+
+**Purge confirmation does not match** (HTTP 400)
+
+- **Cause:** The typed repository ID or the challenge phrase is wrong, expired (valid 15 minutes), belongs to another repository, or the folder changed after the plan was made.
+- **Fix:** Run `zaks-drive repo purge <id> --plan` again and use the new phrase.
 
 ### `CERT_NOT_RECEIVED`
 
