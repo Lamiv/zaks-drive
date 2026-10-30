@@ -38,7 +38,7 @@ flowchart LR
 | `internal/config` | YAML and environment configuration, defaults, validation that reports every problem at once |
 | `internal/auth` | Inbound authentication (API keys, JWT) and the Entra token source for Graph |
 | `internal/graph` | Microsoft Graph client: retries, `Retry-After`, throttling, concurrency limit, drive resolution, error classification |
-| `internal/storage` | Repository abstraction over a drive: names, paths, folders, versions, search, paging with signed cursors |
+| `internal/storage` | Repository abstraction: names, paths, folders, versions, search, paging with signed cursors. Documents are kept by a `Backend` (today only SharePoint/OneDrive through Microsoft Graph, in `sharepoint.go`); the REST API and the SAP layer see neutral `Item`, `Page` and `Version` types, not Graph types |
 | `internal/transfer` | Uploads and downloads: simple upload, upload sessions in 320 KiB-multiple chunks, spooling, memory budget |
 | `internal/restapi` | The REST API |
 | `internal/contentrepo` | The SAP Content Server HTTP interface: commands, secKey verification, certificates, sidecar metadata, admin endpoints |

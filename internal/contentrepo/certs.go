@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/Lamiv/zaks-drive/internal/apperr"
-	"github.com/Lamiv/zaks-drive/internal/graph"
 	"github.com/Lamiv/zaks-drive/internal/safelog"
 	"github.com/Lamiv/zaks-drive/internal/storage"
 )
@@ -140,8 +139,8 @@ func (c *certStore) reload(ctx context.Context, maxAge time.Duration) error {
 	return nil
 }
 
-func (c *certStore) read(ctx context.Context, cr *contentRep, it *graph.DriveItem) (*certRecord, error) {
-	if it.Folder != nil || !strings.HasSuffix(it.Name, ".json") {
+func (c *certStore) read(ctx context.Context, cr *contentRep, it *storage.Item) (*certRecord, error) {
+	if it.Folder || !strings.HasSuffix(it.Name, ".json") {
 		return nil, errors.New("not a certificate record")
 	}
 	resp, err := c.svc.Open(ctx, cr.repo, it, "")
@@ -167,7 +166,7 @@ func (c *certStore) write(ctx context.Context, cr *contentRep, rec *certRecord) 
 	_, err = c.svc.Upload(ctx, cr.repo, storage.UploadRequest{
 		Folder:   cr.folder + "/" + certsFolder,
 		Name:     certFileName(rec.AuthID),
-		Conflict: graph.ConflictReplace,
+		Conflict: storage.ConflictReplace,
 		Body:     bytes.NewReader(b),
 		Size:     int64(len(b)),
 	})

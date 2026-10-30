@@ -99,7 +99,7 @@ type docMeta struct {
 
 type component struct {
 	id      string
-	item    graph.DriveItem
+	item    storage.Item
 	meta    compMeta
 	hasMeta bool // the sidecar describes this component (it was written through this interface)
 }
@@ -108,8 +108,8 @@ func (c *component) contentType() string {
 	if c.meta.ContentType != "" {
 		return c.meta.ContentType
 	}
-	if c.item.File != nil && c.item.File.MimeType != "" {
-		return c.item.File.MimeType
+	if c.item.MimeType != "" {
+		return c.item.MimeType
 	}
 	return "application/octet-stream"
 }
@@ -117,7 +117,7 @@ func (c *component) contentType() string {
 type document struct {
 	id      string
 	meta    *docMeta
-	sidecar *graph.DriveItem
+	sidecar *storage.Item
 	comps   []*component // sorted by compId
 }
 
@@ -397,12 +397,12 @@ func (s *docStore) loadFresh(ctx context.Context, cr *contentRep, docID string) 
 	present := map[string]bool{}
 	for i := range items {
 		it := items[i]
-		if it.Folder != nil || it.Name == sidecarName {
+		if it.Folder || it.Name == sidecarName {
 			continue
 		}
 		id := decodeName(it.Name)
 		present[id] = true
-		c := &component{id: id, item: it, meta: compMeta{Created: it.CreatedDateTime, Modified: it.LastModifiedDateTime}}
+		c := &component{id: id, item: it, meta: compMeta{Created: it.Created, Modified: it.Modified}}
 		if m := d.meta.Components[id]; m != nil {
 			c.meta = *m
 			c.hasMeta = true
@@ -423,7 +423,7 @@ func (s *docStore) loadFresh(ctx context.Context, cr *contentRep, docID string) 
 	return d, nil
 }
 
-func (s *docStore) readSidecar(ctx context.Context, cr *contentRep, it *graph.DriveItem) (*docMeta, error) {
+func (s *docStore) readSidecar(ctx context.Context, cr *contentRep, it *storage.Item) (*docMeta, error) {
 	resp, err := s.svc.Open(ctx, cr.repo, it, "")
 	if err != nil {
 		return nil, err
@@ -487,9 +487,9 @@ func (s *docStore) saveMeta(ctx context.Context, cr *contentRep, docID string, d
 		}
 		req := storage.UploadRequest{Folder: folder, Name: sidecarName, Body: bytes.NewReader(b), Size: int64(len(b))}
 		if isNew {
-			req.Conflict = graph.ConflictFail
+			req.Conflict = storage.ConflictFail
 		} else {
-			req.Conflict, req.IfMatch = graph.ConflictReplace, d.sidecar.ETag
+			req.Conflict, req.IfMatch = storage.ConflictReplace, d.sidecar.ETag
 		}
 		_, err = s.svc.Upload(ctx, cr.repo, req)
 		if err == nil {
@@ -529,7 +529,7 @@ func (s *docStore) ensureShard(ctx context.Context, cr *contentRep, docID string
 
 // putComponent uploads a component. With mustBeNew, an existing component
 // yields errCompExists instead of being overwritten.
-func (s *docStore) putComponent(ctx context.Context, cr *contentRep, docID, compID string, body io.Reader, size int64, mustBeNew bool) (*graph.DriveItem, error) {
+func (s *docStore) putComponent(ctx context.Context, cr *contentRep, docID, compID string, body io.Reader, size int64, mustBeNew bool) (*storage.Item, error) {
 	folder, err := cr.docFolder(docID)
 	if err != nil {
 		return nil, err
@@ -541,9 +541,9 @@ func (s *docStore) putComponent(ctx context.Context, cr *contentRep, docID, comp
 	if err := s.ensureShard(ctx, cr, docID); err != nil {
 		return nil, err
 	}
-	conflict := graph.ConflictReplace
+	conflict := storage.ConflictReplace
 	if mustBeNew {
-		conflict = graph.ConflictFail
+		conflict = storage.ConflictFail
 	}
 	it, err := s.svc.Upload(ctx, cr.repo, storage.UploadRequest{Folder: folder, Name: name, Conflict: conflict, Body: body, Size: size})
 	if graph.IsConflict(err) {
@@ -557,7 +557,7 @@ func (s *docStore) putComponent(ctx context.Context, cr *contentRep, docID, comp
 	return it, err
 }
 
-func (s *docStore) replaceComponent(ctx context.Context, cr *contentRep, c *component, body io.Reader, size int64) (*graph.DriveItem, error) {
+func (s *docStore) replaceComponent(ctx context.Context, cr *contentRep, c *component, body io.Reader, size int64) (*storage.Item, error) {
 	return s.svc.Replace(ctx, cr.repo, c.item.ID, "", body, size)
 }
 

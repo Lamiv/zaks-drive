@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/Lamiv/zaks-drive/internal/apperr"
-	"github.com/Lamiv/zaks-drive/internal/graph"
 	"github.com/Lamiv/zaks-drive/internal/observability"
 	"github.com/Lamiv/zaks-drive/internal/safelog"
 	"github.com/Lamiv/zaks-drive/internal/storage"
@@ -425,7 +424,7 @@ func (s *Server) createPut(w http.ResponseWriter, r *http.Request, p params, cr 
 
 // removeAfterFailedCreate deletes a component stored by a create whose
 // metadata could not be written (best effort, logged on failure).
-func (s *Server) removeAfterFailedCreate(r *http.Request, cr *contentRep, docID string, item *graph.DriveItem) {
+func (s *Server) removeAfterFailedCreate(r *http.Request, cr *contentRep, docID string, item *storage.Item) {
 	if item == nil {
 		return
 	}

@@ -15,7 +15,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -43,11 +42,18 @@ type Repository struct {
 	RootPath string // drive-relative, no leading/trailing slash; "" = drive root
 	ReadOnly bool
 	// WebURL is the browser URL of the library, for logs and diagnostics.
-	WebURL string
+	WebURL  string
+	backend Backend
 	// reserved holds repository-relative folders owned by the SAP content
 	// server. They are invisible to, and immutable through, this handle.
 	reserved []string
 }
+
+// Kind names the backend that stores the repository ("sharepoint").
+func (r *Repository) Kind() string { return r.backend.Kind() }
+
+// Capabilities says what the repository's backend supports.
+func (r *Repository) Capabilities() Caps { return r.backend.Capabilities() }
 
 // Unrestricted returns a handle on the same library without reserved-path
 // restrictions, for the interface that owns those paths.
@@ -78,11 +84,11 @@ func (r *Repository) containsReserved(rel string) bool {
 	return false
 }
 
-// visible reports whether a drive item is inside the repository and not in
-// a reserved folder.
-func (r *Repository) visible(it *graph.DriveItem) bool {
-	rel, ok := r.Rel(it.Path())
-	return ok && !r.hidden(rel)
+// visible reports whether an item the backend returned may be exposed. The
+// backend already confined it to the repository root; this hides the
+// reserved SAP folders.
+func (r *Repository) visible(it *Item) bool {
+	return !it.PathKnown || !r.hidden(it.Path)
 }
 
 // abs converts a repository-relative path to a drive-relative path.
@@ -92,22 +98,6 @@ func (r *Repository) abs(rel string) (string, error) {
 		return "", err
 	}
 	return strings.Trim(r.RootPath+"/"+clean, "/"), nil
-}
-
-// Rel converts a drive path ("/root/sub/x.pdf") to a repository-relative one;
-// ok is false when the item is outside the repository.
-func (r *Repository) Rel(drivePath string) (string, bool) {
-	p := strings.Trim(drivePath, "/")
-	if r.RootPath == "" {
-		return p, true
-	}
-	if p == r.RootPath {
-		return "", true
-	}
-	if strings.HasPrefix(p, r.RootPath+"/") {
-		return p[len(r.RootPath)+1:], true
-	}
-	return "", false
 }
 
 // CleanPath validates a relative path: no "..", no empty or dot segments,
@@ -148,25 +138,6 @@ func ValidName(name string) error {
 	return nil
 }
 
-// maxSharePointPath is SharePoint's limit for the decoded path after the
-// domain, including site, library and all folders.
-const maxSharePointPath = 400
-
-// checkPathLength rejects a path SharePoint would refuse, with a clear
-// message, before any bytes are sent. rel is relative to the repository root.
-func (r *Repository) checkPathLength(rel string) error {
-	prefix := 40 // typical /sites/<site>/<library> when the URL is unknown
-	if u, err := url.Parse(r.WebURL); err == nil && u.Path != "" {
-		prefix = len(u.Path)
-	}
-	total := prefix + 1 + len(strings.Trim(r.RootPath+"/"+rel, "/"))
-	if total > maxSharePointPath {
-		return apperr.New(apperr.PathTooLong, "the path would be about %d characters; SharePoint allows %d (library path %d + root folder %q + %q)",
-			total, maxSharePointPath, prefix, r.RootPath, rel).Wrap(ErrInvalid)
-	}
-	return nil
-}
-
 // notFound builds the coded "not found" error.
 func notFound(format string, args ...any) error {
 	return apperr.New(apperr.DocNotFound, format, args...).Wrap(ErrNotFound)
@@ -181,7 +152,6 @@ func reserved(r *Repository, rel string) error {
 }
 
 type Service struct {
-	g         *graph.Client
 	eng       *transfer.Engine
 	repos     map[string]*Repository
 	order     []string
@@ -191,7 +161,7 @@ type Service struct {
 }
 
 func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs []config.RepositoryConfig, cacheTTL time.Duration, log *slog.Logger) (*Service, error) {
-	s := &Service{g: g, eng: eng, repos: map[string]*Repository{}, cache: newItemCache(cacheTTL, 20000), log: log}
+	s := &Service{eng: eng, repos: map[string]*Repository{}, cache: newItemCache(cacheTTL, 20000), log: log}
 	s.cursorKey = make([]byte, 32)
 	_, _ = rand.Read(s.cursorKey)
 	for _, rc := range cfgs {
@@ -207,6 +177,7 @@ func NewService(ctx context.Context, g *graph.Client, eng *transfer.Engine, cfgs
 		if _, web, err := g.DriveInfo(ctx, drive); err == nil {
 			repo.WebURL = web
 		}
+		repo.backend = newSharePointBackend(g, eng, drive, rc.RootPath, repo.WebURL)
 		log.Info("repository ready: documents are stored here", "repository", rc.ID, "library_url", repo.WebURL, "root_path", rc.RootPath)
 		s.repos[rc.ID] = repo
 		s.order = append(s.order, rc.ID)
@@ -263,16 +234,19 @@ func mapErr(err error) error {
 
 // Get returns item metadata (including a fresh-enough download URL) for an
 // item inside repo. Results are cached briefly.
-func (s *Service) Get(ctx context.Context, repo *Repository, id string) (*graph.DriveItem, error) {
+func (s *Service) Get(ctx context.Context, repo *Repository, id string) (*Item, error) {
 	if it := s.cache.get(repo.DriveID, id); it != nil {
 		if repo.visible(it) {
 			return it, nil
 		}
 		return nil, notFound("item %s is not inside repository %q", id, repo.ID)
 	}
-	it, err := s.g.GetItem(ctx, repo.DriveID, id)
+	it, err := repo.backend.Stat(ctx, id)
+	if errors.Is(err, ErrOutsideRoot) {
+		return nil, notFound("item %s exists in the library but is not inside repository %q (root folder %q)", id, repo.ID, repo.RootPath)
+	}
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, err
 	}
 	if !repo.visible(it) {
 		return nil, notFound("item %s exists in the library but is not inside repository %q (root folder %q)", id, repo.ID, repo.RootPath)
@@ -282,35 +256,36 @@ func (s *Service) Get(ctx context.Context, repo *Repository, id string) (*graph.
 }
 
 // Refresh bypasses the cache.
-func (s *Service) Refresh(ctx context.Context, repo *Repository, id string) (*graph.DriveItem, error) {
+func (s *Service) Refresh(ctx context.Context, repo *Repository, id string) (*Item, error) {
 	s.cache.drop(repo.DriveID, id)
 	return s.Get(ctx, repo, id)
 }
 
-func (s *Service) GetByPath(ctx context.Context, repo *Repository, rel string) (*graph.DriveItem, error) {
-	p, err := repo.abs(rel)
+func (s *Service) GetByPath(ctx context.Context, repo *Repository, rel string) (*Item, error) {
+	clean, err := CleanPath(rel)
 	if err != nil {
 		return nil, err
 	}
-	if clean, _ := CleanPath(rel); repo.hidden(clean) {
+	if repo.hidden(clean) {
 		return nil, notFound("%q does not exist in repository %q", rel, repo.ID)
 	}
-	it, err := s.g.GetItemByPath(ctx, repo.DriveID, p)
+	it, err := repo.backend.StatPath(ctx, clean)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, err
 	}
 	s.cache.put(repo.DriveID, it)
 	return it, nil
 }
 
 type Page struct {
-	Items  []graph.DriveItem
+	Items  []Item
 	Cursor string
 }
 
-// Cursors wrap Graph's @odata.nextLink. They are authenticated with an HMAC
-// bound to the repository, drive and listing scope (folder or query), so a
-// caller cannot substitute a link to another drive, site or folder.
+// Cursors wrap the backend's continuation token. They are authenticated with
+// an HMAC bound to the repository, drive and listing scope (folder or
+// query), so a caller cannot substitute a link to another drive, site or
+// folder.
 
 func (s *Service) cursorMAC(repo *Repository, scope, link string) []byte {
 	m := hmac.New(sha256.New, s.cursorKey)
@@ -345,12 +320,12 @@ func (s *Service) decodeCursor(repo *Repository, scope, c string) (string, error
 	return string(link), nil
 }
 
-// visibleItems keeps only items inside the repository and outside reserved
-// folders (defence in depth for listings and search results).
-func visibleItems(repo *Repository, items []graph.DriveItem) []graph.DriveItem {
+// visibleItems keeps only items outside reserved folders (defence in depth
+// for listings and search results).
+func visibleItems(repo *Repository, items []Item) []Item {
 	out := items[:0]
 	for _, it := range items {
-		if it.ParentReference != nil && it.ParentReference.Path != "" && !repo.visible(&it) {
+		if !repo.visible(&it) {
 			continue
 		}
 		out = append(out, it)
@@ -359,23 +334,24 @@ func visibleItems(repo *Repository, items []graph.DriveItem) []graph.DriveItem {
 }
 
 func (s *Service) List(ctx context.Context, repo *Repository, rel string, top int, cursor string) (*Page, error) {
-	p, err := repo.abs(rel)
+	clean, err := CleanPath(rel)
 	if err != nil {
 		return nil, err
 	}
-	if clean, _ := CleanPath(rel); repo.hidden(clean) {
+	if repo.hidden(clean) {
 		return nil, notFound("no such item in repository %q", repo.ID)
 	}
+	p, _ := repo.abs(rel)
 	scope := "list:" + p
 	next, err := s.decodeCursor(repo, scope, cursor)
 	if err != nil {
 		return nil, err
 	}
-	pg, err := s.g.ListChildren(ctx, repo.DriveID, p, top, next)
+	pg, err := repo.backend.List(ctx, clean, top, next)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, err
 	}
-	return &Page{Items: visibleItems(repo, pg.Items), Cursor: s.encodeCursor(repo, scope, pg.NextLink)}, nil
+	return &Page{Items: visibleItems(repo, pg.Items), Cursor: s.encodeCursor(repo, scope, pg.Next)}, nil
 }
 
 func (s *Service) Search(ctx context.Context, repo *Repository, query string, top int, cursor string) (*Page, error) {
@@ -387,20 +363,18 @@ func (s *Service) Search(ctx context.Context, repo *Repository, query string, to
 	if err != nil {
 		return nil, err
 	}
-	pg, err := s.g.Search(ctx, repo.DriveID, repo.RootPath, query, top, next)
+	pg, err := repo.backend.Search(ctx, query, top, next)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, err
 	}
-	// Defence in depth: drop hits outside the repository (in case the
-	// service widens a folder-scoped search) and inside reserved folders.
-	return &Page{Items: visibleItems(repo, pg.Items), Cursor: s.encodeCursor(repo, scope, pg.NextLink)}, nil
+	return &Page{Items: visibleItems(repo, pg.Items), Cursor: s.encodeCursor(repo, scope, pg.Next)}, nil
 }
 
 // UploadRequest creates a new document in folder (repository-relative).
 type UploadRequest struct {
 	Folder   string
 	Name     string
-	Conflict graph.ConflictBehavior
+	Conflict Conflict
 	Body     io.Reader
 	Size     int64 // -1 if unknown
 	// IfMatch makes the write conditional on the current eTag of an
@@ -408,37 +382,37 @@ type UploadRequest struct {
 	IfMatch string
 }
 
-func (s *Service) Upload(ctx context.Context, repo *Repository, req UploadRequest) (*graph.DriveItem, error) {
+func (s *Service) Upload(ctx context.Context, repo *Repository, req UploadRequest) (*Item, error) {
 	if repo.ReadOnly {
 		return nil, readOnly(repo)
 	}
 	if err := ValidName(req.Name); err != nil {
 		return nil, err
 	}
-	folder, err := repo.abs(req.Folder)
+	folder, err := CleanPath(req.Folder)
 	if err != nil {
 		return nil, err
 	}
-	if clean, _ := CleanPath(req.Folder); repo.hidden(strings.TrimLeft(clean+"/"+req.Name, "/")) {
-		return nil, reserved(repo, strings.TrimLeft(clean+"/"+req.Name, "/"))
+	rel := strings.TrimLeft(folder+"/"+req.Name, "/")
+	if repo.hidden(rel) {
+		return nil, reserved(repo, rel)
 	}
-	if err := repo.checkPathLength(strings.Trim(req.Folder, "/") + "/" + req.Name); err != nil {
+	if err := repo.backend.CheckPath(strings.Trim(req.Folder, "/") + "/" + req.Name); err != nil {
 		return nil, err
 	}
 	if req.Conflict == "" {
-		req.Conflict = graph.ConflictRename
+		req.Conflict = ConflictRename
 	}
-	t := transfer.Target{Drive: repo.DriveID, Path: strings.TrimLeft(folder+"/"+req.Name, "/"), Conflict: req.Conflict, IfMatch: req.IfMatch}
-	it, err := s.eng.Upload(ctx, t, req.Body, req.Size)
+	it, err := repo.backend.Create(ctx, rel, req.Body, req.Size, req.Conflict, req.IfMatch)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, err
 	}
 	s.cache.drop(repo.DriveID, it.ID)
 	return it, nil
 }
 
-// Replace uploads new content for an existing item (new SharePoint version).
-func (s *Service) Replace(ctx context.Context, repo *Repository, id, ifMatch string, body io.Reader, size int64) (*graph.DriveItem, error) {
+// Replace uploads new content for an existing item (a new version).
+func (s *Service) Replace(ctx context.Context, repo *Repository, id, ifMatch string, body io.Reader, size int64) (*Item, error) {
 	if repo.ReadOnly {
 		return nil, readOnly(repo)
 	}
@@ -446,15 +420,11 @@ func (s *Service) Replace(ctx context.Context, repo *Repository, id, ifMatch str
 	if err != nil {
 		return nil, err
 	}
-	if cur.Folder != nil {
+	if cur.Folder {
 		return nil, apperr.New(apperr.ItemIsFolder, "item %s is a folder", id).Wrap(ErrInvalid)
 	}
 	s.cache.drop(repo.DriveID, id)
-	it, err := s.eng.Upload(ctx, transfer.Target{Drive: repo.DriveID, ItemID: id, IfMatch: ifMatch}, body, size)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return it, nil
+	return repo.backend.Replace(ctx, id, ifMatch, body, size)
 }
 
 func (s *Service) Delete(ctx context.Context, repo *Repository, id, ifMatch string) error {
@@ -465,14 +435,14 @@ func (s *Service) Delete(ctx context.Context, repo *Repository, id, ifMatch stri
 	if err != nil {
 		return err
 	}
-	if rel, _ := repo.Rel(it.Path()); it.Folder != nil && repo.containsReserved(rel) {
-		return reserved(repo, rel)
+	if it.Folder && repo.containsReserved(it.Path) {
+		return reserved(repo, it.Path)
 	}
 	s.cache.drop(repo.DriveID, id)
-	return mapErr(s.g.Delete(ctx, repo.DriveID, id, ifMatch))
+	return repo.backend.Delete(ctx, id, ifMatch)
 }
 
-func (s *Service) CreateFolder(ctx context.Context, repo *Repository, rel string) (*graph.DriveItem, error) {
+func (s *Service) CreateFolder(ctx context.Context, repo *Repository, rel string) (*Item, error) {
 	if repo.ReadOnly {
 		return nil, readOnly(repo)
 	}
@@ -483,97 +453,55 @@ func (s *Service) CreateFolder(ctx context.Context, repo *Repository, rel string
 	if p == "" {
 		return nil, apperr.New(apperr.FolderPathRequired, "the folder path is empty").Wrap(ErrInvalid)
 	}
-	if clean, _ := CleanPath(rel); repo.hidden(clean) {
+	clean, _ := CleanPath(rel)
+	if repo.hidden(clean) {
 		return nil, reserved(repo, rel)
 	}
-	it, err := s.g.CreateFolderPath(ctx, repo.DriveID, p)
-	return it, mapErr(err)
+	return repo.backend.CreateFolder(ctx, clean)
 }
 
 // EnsureFolder makes sure folder rel exists, creating parents as needed.
 // Only the last segment is created with a single call when the parent is
-// known to exist (parentKnown), which keeps hot paths to one Graph request.
+// known to exist (parentKnown), which keeps hot paths to one request.
 func (s *Service) EnsureFolder(ctx context.Context, repo *Repository, rel string, parentKnown bool) error {
 	if repo.ReadOnly {
 		return readOnly(repo)
 	}
-	p, err := repo.abs(rel)
+	clean, err := CleanPath(rel)
 	if err != nil {
 		return err
 	}
-	if !parentKnown {
-		_, err := s.g.CreateFolderPath(ctx, repo.DriveID, p)
-		return mapErr(err)
-	}
-	parent, name := path.Split(p)
-	return mapErr(s.g.EnsureChildFolder(ctx, repo.DriveID, strings.TrimSuffix(parent, "/"), name))
+	return repo.backend.EnsureFolder(ctx, clean, parentKnown)
 }
 
-func (s *Service) Versions(ctx context.Context, repo *Repository, id string) ([]graph.Version, error) {
+func (s *Service) Versions(ctx context.Context, repo *Repository, id string) ([]Version, error) {
 	if _, err := s.Get(ctx, repo, id); err != nil {
 		return nil, err
 	}
-	v, err := s.g.Versions(ctx, repo.DriveID, id)
-	return v, mapErr(err)
+	return repo.backend.Versions(ctx, id)
 }
 
 // Download streams content to w. The caller sets descriptive headers first.
-func (s *Service) Download(ctx context.Context, w http.ResponseWriter, repo *Repository, it *graph.DriveItem, rangeHdr string) (transfer.DownloadResult, error) {
-	refresh := func() (string, error) {
-		fresh, err := s.Refresh(ctx, repo, it.ID)
-		if err != nil {
-			return "", err
-		}
-		return fresh.DownloadURL, nil
+func (s *Service) Download(ctx context.Context, w http.ResponseWriter, repo *Repository, it *Item, rangeHdr string) (transfer.DownloadResult, error) {
+	resp, err := s.Open(ctx, repo, it, rangeHdr)
+	if err != nil {
+		return transfer.DownloadResult{}, err
 	}
-	url := it.DownloadURL
-	if url == "" {
-		var err error
-		if url, err = refresh(); err != nil {
-			return transfer.DownloadResult{}, err
-		}
-	}
-	if url == "" {
-		// No pre-authenticated URL available: stream through /content.
-		resp, err := s.g.OpenContent(ctx, repo.DriveID, it.ID, rangeHdr)
-		if err != nil {
-			return transfer.DownloadResult{}, mapErr(err)
-		}
-		res, err := s.eng.StreamOpened(ctx, w, resp)
-		return res, mapErr(err)
-	}
-	res, err := s.eng.Stream(ctx, w, url, rangeHdr, refresh)
+	res, err := s.eng.StreamOpened(ctx, w, resp)
 	return res, mapErr(err)
 }
 
 // Open returns the raw content response (optionally a byte range) for it,
 // refreshing an expired download URL once. The caller closes the body.
-func (s *Service) Open(ctx context.Context, repo *Repository, it *graph.DriveItem, rangeHdr string) (*http.Response, error) {
-	refresh := func() (string, error) {
-		fresh, err := s.Refresh(ctx, repo, it.ID)
-		if err != nil {
-			return "", err
-		}
-		return fresh.DownloadURL, nil
-	}
-	url := it.DownloadURL
-	if url == "" {
-		var err error
-		if url, err = refresh(); err != nil {
-			return nil, err
-		}
-	}
-	if url == "" {
-		resp, err := s.g.OpenContent(ctx, repo.DriveID, it.ID, rangeHdr)
-		return resp, mapErr(err)
-	}
-	resp, err := s.eng.Open(ctx, url, rangeHdr, refresh)
-	return resp, mapErr(err)
+func (s *Service) Open(ctx context.Context, repo *Repository, it *Item, rangeHdr string) (*http.Response, error) {
+	return repo.backend.Open(ctx, it, rangeHdr, func(ctx context.Context) (*Item, error) {
+		return s.Refresh(ctx, repo, it.ID)
+	})
 }
 
 // ListAll returns every child of a repository-relative folder.
-func (s *Service) ListAll(ctx context.Context, repo *Repository, rel string) ([]graph.DriveItem, error) {
-	var all []graph.DriveItem
+func (s *Service) ListAll(ctx context.Context, repo *Repository, rel string) ([]Item, error) {
+	var all []Item
 	cursor := ""
 	for {
 		pg, err := s.List(ctx, repo, rel, 1000, cursor)
@@ -592,14 +520,13 @@ func (s *Service) Thumbnail(ctx context.Context, repo *Repository, id, size stri
 	if _, err := s.Get(ctx, repo, id); err != nil {
 		return nil, err
 	}
-	resp, err := s.g.OpenThumbnail(ctx, repo.DriveID, id, size)
-	return resp, mapErr(err)
+	return repo.backend.Thumbnail(ctx, id, size)
 }
 
-// Ping checks Graph connectivity for the first repository.
+// Ping checks connectivity of the first repository's store.
 func (s *Service) Ping(ctx context.Context) error {
 	for _, id := range s.order {
-		return s.g.Ping(ctx, s.repos[id].DriveID)
+		return s.repos[id].backend.Ready(ctx)
 	}
 	return nil
 }
@@ -607,7 +534,7 @@ func (s *Service) Ping(ctx context.Context) error {
 // ---- small TTL cache for item metadata ----
 
 type cacheEntry struct {
-	item    *graph.DriveItem
+	item    *Item
 	expires time.Time
 }
 
@@ -622,7 +549,7 @@ func newItemCache(ttl time.Duration, max int) *itemCache {
 	return &itemCache{ttl: ttl, max: max, m: map[string]cacheEntry{}}
 }
 
-func (c *itemCache) get(drive, id string) *graph.DriveItem {
+func (c *itemCache) get(drive, id string) *Item {
 	if c.ttl <= 0 {
 		return nil
 	}
@@ -639,7 +566,7 @@ func (c *itemCache) get(drive, id string) *graph.DriveItem {
 	return e.item
 }
 
-func (c *itemCache) put(drive string, it *graph.DriveItem) {
+func (c *itemCache) put(drive string, it *Item) {
 	if c.ttl <= 0 || it == nil || it.ID == "" {
 		return
 	}

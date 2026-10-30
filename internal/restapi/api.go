@@ -160,7 +160,7 @@ func (a *API) download(w http.ResponseWriter, r *http.Request, repo *storage.Rep
 		a.fail(w, r, err)
 		return
 	}
-	if it.Folder != nil {
+	if it.Folder {
 		a.fail(w, r, apperr.New(apperr.ItemIsFolder, "item %s is a folder and has no content", it.ID))
 		return
 	}
@@ -180,15 +180,15 @@ func (a *API) download(w http.ResponseWriter, r *http.Request, repo *storage.Rep
 	if m := r.URL.Query().Get("mode"); m == "redirect" || m == "proxy" {
 		mode = m
 	}
-	if mode == "redirect" && it.DownloadURL != "" {
+	if mode == "redirect" && it.DirectURL != "" {
 		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, it.DownloadURL, http.StatusFound)
+		http.Redirect(w, r, it.DirectURL, http.StatusFound)
 		return
 	}
 
 	ct := "application/octet-stream"
-	if it.File != nil && it.File.MimeType != "" {
-		ct = it.File.MimeType
+	if it.MimeType != "" {
+		ct = it.MimeType
 	}
 	disp := "attachment"
 	if d := r.URL.Query().Get("disposition"); d == "inline" {
@@ -199,8 +199,8 @@ func (a *API) download(w http.ResponseWriter, r *http.Request, repo *storage.Rep
 	h.Set("Content-Disposition", contentDisposition(disp, it.Name))
 	h.Set("Cache-Control", "private, no-cache")
 	h.Set("X-Content-Type-Options", "nosniff")
-	if !it.LastModifiedDateTime.IsZero() {
-		h.Set("Last-Modified", it.LastModifiedDateTime.UTC().Format(http.TimeFormat))
+	if !it.Modified.IsZero() {
+		h.Set("Last-Modified", it.Modified.UTC().Format(http.TimeFormat))
 	}
 	if r.Method == http.MethodHead {
 		h.Set("Content-Length", strconv.FormatInt(it.Size, 10))
@@ -261,7 +261,7 @@ func (a *API) versions(w http.ResponseWriter, r *http.Request, repo *storage.Rep
 	}
 	out := make([]vOut, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, vOut{ID: v.ID, Size: v.Size, ModifiedAt: v.LastModifiedDateTime, ModifiedBy: v.LastModifiedBy.Name()})
+		out = append(out, vOut{ID: v.ID, Size: v.Size, ModifiedAt: v.Modified, ModifiedBy: v.ModifiedBy})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"value": out})
 }
@@ -390,11 +390,11 @@ func (a *API) upload(w http.ResponseWriter, r *http.Request, repo *storage.Repos
 	}
 	switch conflict {
 	case "", "rename":
-		req.Conflict = graph.ConflictRename
+		req.Conflict = storage.ConflictRename
 	case "replace":
-		req.Conflict = graph.ConflictReplace
+		req.Conflict = storage.ConflictReplace
 	case "fail":
-		req.Conflict = graph.ConflictFail
+		req.Conflict = storage.ConflictFail
 	default:
 		a.fail(w, r, apperr.New(apperr.UploadConflictInvalid, "conflict is %q; use rename, replace or fail", conflict))
 		return
