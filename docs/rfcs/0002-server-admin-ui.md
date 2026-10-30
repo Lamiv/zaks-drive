@@ -18,6 +18,15 @@ Add a web **admin UI served by the server itself** on its existing admin listene
 - The command-line tool needs shell access to the Docker host. A UI served by the server can be reached through an SSH tunnel or a TLS reverse proxy by people who should not have shell access.
 - Today the admin port serves health, metrics and a few certificate endpoints. There is no consolidated way to see the state of every repository.
 
+## Decisions so far
+
+From the maintainer's answers (2026-10-30):
+
+- **Login stays simple** for now: the admin token. **Sign-in with Microsoft Entra ID** is a planned later option and the design leaves room for it.
+- **Only one role exists: administrator.** No read-only or other roles.
+- **Restart traffic:** applying changes always goes through a maintenance drain (see [Applying changes](#applying-changes)).
+- **Purge is not available in the UI or the admin API** (see [RFC 0001](0001-repositories-and-storage-backends.md#removing-and-purging-a-repository)).
+
 ## What the UI can and cannot do
 
 The maintainer chose a UI **in the server**. That has a consequence that this RFC states plainly: a server running in a container **cannot** start, stop, update or roll back its own container, install itself, or collect host information, without being given the Docker socket, and handing the Docker socket to a network-facing service is a serious privilege escalation that this project will not do.
@@ -33,6 +42,7 @@ So "the same features as the CLI" means the **server-side** features:
 | `logs` | **Yes**, the server's own recent log lines (sanitized ring buffer, filter by level, interface, request ID) | the server cannot read Docker's log store |
 | `check` (SharePoint access test) | **Yes**, per repository | the server does it itself |
 | Apply changes (restart) | **Yes**: the server exits cleanly and the container policy restarts it | restart-based, per RFC 0001 |
+| `repo purge` (delete documents) | **No, by design** | too dangerous to reach through a browser session or a stolen token; CLI on the host only (RFC 0001) |
 | `setup`, `start`, `stop`, `restart` of the container, `update`, `rollback`, `support bundle`, host `doctor` checks | **No** | need the host and Docker; they stay in the command |
 
 A later RFC can add a **host-side** mode (`zaks-drive ui`, running on the administrator's machine with the same code as the command) for the host-level operations. This RFC keeps the two designs compatible: both use the same admin API and the same UI assets.
@@ -67,7 +77,7 @@ The existing `/admin/contentserver/certificates...` endpoints keep working uncha
 - **Login with `ADMIN_TOKEN`** (the same secret the admin API uses today). The browser exchanges it once for a **session cookie** (`HttpOnly`, `SameSite=Strict`, `Secure` when served over TLS, short idle and absolute lifetime). The token itself is never stored in the browser.
 - **CSRF:** every state-changing request needs a per-session CSRF token header in addition to the cookie, and the server rejects cross-origin requests (`Origin` / `Host` check).
 - **Login throttling:** failed logins are rate limited per source address, with a constant-time token comparison.
-- **One role** in the first version: administrator. Several admin accounts or roles (read-only operator) would need an identity store and are out of scope; an OIDC login (Entra ID) is listed as a future RFC.
+- **One role: administrator.** That is the decision for this RFC. Several accounts or roles would need an identity store. An **Entra ID sign-in** can replace the token login later without changing the API or the pages: the session layer is the only part that changes, and it will get its own RFC.
 - If `ADMIN_TOKEN` is empty, the UI and every mutating admin endpoint are **disabled** (the server logs why).
 
 ### Exposure
@@ -102,7 +112,9 @@ Every mutating admin call, from the UI or the command, appends a line to the `au
 
 ### Applying changes
 
-The UI's "Apply and restart" calls `/apply`. The server validates the pending state once more, finishes in-flight requests (bounded drain), and exits with status 0. The container runs under `restart: unless-stopped`, so Docker starts it again with the new repositories. The UI shows "restarting" and polls `/readyz`. If the new state fails validation at start-up the server keeps the **last working state**: it records the failure in the audit log and the diagnostics, so a bad repository cannot take the whole service down.
+The UI's "Apply and restart" calls `/apply`, which runs the **maintenance drain** defined in [RFC 0001](0001-repositories-and-storage-backends.md#applying-changes-restart-through-a-maintenance-drain): the server validates the pending state once more, enters maintenance mode (new SAP and REST requests get `503` with `Retry-After`; SAP retries), waits for in-flight requests up to the drain time, then exits with status 0 so the container policy (`restart: unless-stopped`) starts it again with the new repositories.
+
+The UI shows how many requests are still running before the administrator confirms, offers wait, extend or cancel, then shows "restarting" and polls `/readyz`. If the new state fails validation at start-up the server keeps the **last working state**: it records the failure in the audit log and the diagnostics, so a bad repository cannot take the whole service down.
 
 ## Alternatives
 
@@ -161,11 +173,12 @@ None. The UI is off unless `ADMIN_TOKEN` is set, which the shipped setup already
 
 ## Open questions
 
-- Is the single `ADMIN_TOKEN` login acceptable for the first version, or is Entra ID sign-in required before any release that includes the UI?
+Answered by the maintainer and moved to [Decisions so far](#decisions-so-far): the login method for now, roles, restart traffic. Still open:
+
 - Should the UI be **off by default** (`server.admin.ui: false`) and enabled by `zaks-drive setup`, or on whenever `ADMIN_TOKEN` is set?
-- Is a read-only operator role needed early (view only, no secrets, no apply)?
 - Which languages besides English?
-- Should "Apply and restart" be allowed when SAP traffic is in flight (bounded drain, then exit), or require an explicit maintenance mode?
+- The drain length and whether requests during maintenance should be queued instead of refused (shared with RFC 0001).
+- When the Entra sign-in RFC is written: which Entra roles or groups map to the administrator role?
 
 ## Outcome (filled in by a maintainer)
 
