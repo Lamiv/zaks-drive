@@ -264,6 +264,10 @@ type StatusReport struct {
 	Ready      bool            `json:"ready"`
 	ReadyNote  string          `json:"readyNote,omitempty"`
 	Containers []ContainerInfo `json:"containers"`
+	// Repositories is the allowlisted view of the repositories (only when the server's admin API is usable).
+	Repositories   []RepoRow `json:"repositories,omitempty"`
+	PendingRestart bool      `json:"pendingRestart,omitempty"`
+	Fallback       bool      `json:"fallbackActive,omitempty"`
 }
 
 // ContainerInfo is the sanitized, allowlisted view of a container.
@@ -309,6 +313,9 @@ func (a *App) statusReport(ctx context.Context, d *Deployment) (StatusReport, er
 		}
 	} else {
 		r.ReadyNote = "the admin endpoint does not answer"
+	}
+	if ov := a.repoOverview(ctx, d); ov != nil {
+		r.Repositories, r.PendingRestart, r.Fallback = ov.rows(), ov.Status.PendingRestart, ov.Status.Fallback != ""
 	}
 	return r, nil
 }
@@ -360,6 +367,19 @@ func (a *App) cmdStatus(ctx context.Context, args []string) int {
 			a.printf("Ready        yes\n")
 		case len(r.Containers) > 0:
 			a.printf("Ready        NO: %s\n", r.ReadyNote)
+		}
+		for _, row := range r.Repositories {
+			sap := ""
+			if row.SAP {
+				sap = ", SAP"
+			}
+			a.printf("Repository   %s: %s (%s%s), %s\n", row.ID, row.Backend, row.Source, sap, row.State)
+		}
+		if r.PendingRestart {
+			a.printf("Pending      repository changes are waiting for a restart (zaks-drive restart)\n")
+		}
+		if r.Fallback {
+			a.printf("WARNING      the server runs the LAST WORKING repository state because the current one is invalid (zaks-drive repo list)\n")
 		}
 	}
 	if len(r.Containers) == 0 || !r.Ready {

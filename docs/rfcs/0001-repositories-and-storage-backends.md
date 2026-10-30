@@ -273,6 +273,18 @@ Each step is a separate, reviewable pull request.
 6. **`repo` commands** (including the maintenance drain and `repo purge`) and the `status` / `doctor` / `setup` / bundle changes; documentation.
 7. UI in [RFC 0002](0002-server-admin-ui.md).
 
+## Implementation notes
+
+Where the implementation made a choice the text above left open or differs from it:
+
+- **ETags of local files** use a strictly increasing modification time instead of a generation sidecar (see the local backend table).
+- **Detach** removes the stored client secret as well and keeps a secret-free copy of the definition under `detached/<ID>.yaml`, so the repository can be added again and a purge can find its folder. Documents are never touched.
+- **A server without any repository** may start when a state directory is configured (it reports not ready and waits), so the first repository can be added while the server runs. `/readyz` is ready only when every repository is usable.
+- **Admin API** (`/admin/api/v1`) refuses to work without `ADMIN_TOKEN` (the older certificate endpoints only check it when set), and locks out repeated wrong tokens.
+- **Last working state**: a copy of the definitions (not the secrets) is saved after each successful start under `last-good/`; a start whose definitions do not validate falls back to it and reports why.
+- **Purge** is implemented only in the one-off command (`zaks-drive-server repos purge`), never in the admin API. The challenge phrase is a keyed MAC over the repository, the expiry and the exact state of its folder, so it cannot be prepared in advance or replayed after a change.
+- **Not yet done**: the per-repository size cap, per-repository `readOnly` overrides for SAP, per-repository `allowedNetworks` and a `repository` label on metrics remain open questions below.
+
 ## Open questions
 
 Answered by the maintainer and moved to [Decisions so far](#decisions-so-far): ID length, local version limit, removal and purge, roles, restart traffic. Still open:

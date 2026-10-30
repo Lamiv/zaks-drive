@@ -113,6 +113,7 @@ func (a *repoAPI) register(mux *http.ServeMux) {
 	h("POST /admin/api/v1/apply", a.apply)
 	h("POST /admin/api/v1/apply/cancel", a.cancelApply)
 	h("GET /admin/api/v1/audit", a.audit)
+	h("GET /admin/api/v1/detached", a.detached)
 }
 
 // guard authenticates the caller and slows down guessing: after
@@ -409,4 +410,18 @@ func (a *repoAPI) servingIDs() []string {
 		return ids
 	}
 	return []string{}
+}
+
+// detached lists repositories that were detached (read-only; a purge is not
+// available here).
+func (a *repoAPI) detached(w http.ResponseWriter, r *http.Request) {
+	specs, err := a.mgr.Detached()
+	if err != nil {
+		apiFail(w, err)
+		return
+	}
+	if specs == nil {
+		specs = []repoadmin.Spec{}
+	}
+	writeAPI(w, http.StatusOK, map[string]any{"value": specs})
 }

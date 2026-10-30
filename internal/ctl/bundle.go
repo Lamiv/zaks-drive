@@ -23,24 +23,29 @@ import (
 // client IDs, the SharePoint host and site names, library and folder names, API keys and any
 // address list contents.
 type ConfigSummary struct {
-	Interfaces      []string          `json:"interfaces"`
-	HostPorts       map[string]int    `json:"hostPorts"`
-	BindAddress     string            `json:"bindAddress"`
-	TLSByServer     bool              `json:"tlsTerminatedByServer"`
-	GraphConfigured bool              `json:"graphCredentialsConfigured"`
-	Graph           map[string]int    `json:"graph"`
-	Server          map[string]any    `json:"server"`
-	Repositories    []RepoSummary     `json:"repositories"`
-	ContentServer   ContentSummary    `json:"contentServer"`
-	Auth            map[string]any    `json:"auth"`
-	Transfer        map[string]any    `json:"transfer"`
-	Log             map[string]string `json:"log"`
+	Interfaces      []string       `json:"interfaces"`
+	HostPorts       map[string]int `json:"hostPorts"`
+	BindAddress     string         `json:"bindAddress"`
+	TLSByServer     bool           `json:"tlsTerminatedByServer"`
+	GraphConfigured bool           `json:"graphCredentialsConfigured"`
+	Graph           map[string]int `json:"graph"`
+	Server          map[string]any `json:"server"`
+	Repositories    []RepoSummary  `json:"repositories"`
+	// ManagedRepositories are the repositories kept in the server volume (only when the admin API was usable).
+	ManagedRepositories []RepoRow         `json:"managedRepositories,omitempty"`
+	PendingRestart      bool              `json:"pendingRestart,omitempty"`
+	FallbackActive      bool              `json:"fallbackActive,omitempty"`
+	ContentServer       ContentSummary    `json:"contentServer"`
+	Auth                map[string]any    `json:"auth"`
+	Transfer            map[string]any    `json:"transfer"`
+	Log                 map[string]string `json:"log"`
 }
 
 // RepoSummary describes a repository without naming the SharePoint location.
 type RepoSummary struct {
 	ID             string `json:"id"`
-	LocationType   string `json:"locationType"` // siteUrl, siteId, userId, driveId
+	Backend        string `json:"backend"`      // sharepoint or local
+	LocationType   string `json:"locationType"` // siteUrl, siteId, userId, driveId (SharePoint only)
 	LibraryNameSet bool   `json:"libraryNameSet"`
 	RootPathSet    bool   `json:"rootPathSet"`
 	ReadOnly       bool   `json:"readOnly"`
@@ -88,7 +93,7 @@ func summarizeConfig(cfg config.Config, p Ports) ConfigSummary {
 		case r.DriveID != "":
 			loc = "driveId"
 		}
-		s.Repositories = append(s.Repositories, RepoSummary{ID: r.ID, LocationType: loc, LibraryNameSet: r.DriveName != "", RootPathSet: r.RootPath != "", ReadOnly: r.ReadOnly})
+		s.Repositories = append(s.Repositories, RepoSummary{ID: r.ID, Backend: r.Backend, LocationType: loc, LibraryNameSet: r.DriveName != "", RootPathSet: r.RootPath != "", ReadOnly: r.ReadOnly})
 	}
 	s.ContentServer = ContentSummary{AllowedNetworkCount: len(cfg.ContentServer.AllowedNetworks), ClockSkew: cfg.ContentServer.ClockSkew.String(), AutoActivateCerts: cfg.ContentServer.AutoActivateCertificates}
 	for _, c := range cfg.ContentServer.Repositories {
@@ -168,7 +173,15 @@ func (a *App) bundleItems(ctx context.Context, d *Deployment, tail int, withLogs
 			if len(problems) > 0 {
 				return marshal(map[string]any{"valid": false, "problems": san.Lines(problems)})
 			}
-			return marshal(summarizeConfig(cfg, d.ports()))
+			sum := summarizeConfig(cfg, d.ports())
+			// Repositories managed through `repo` live in the server's volume; they are
+			// added as allowlisted rows (no location, tenant or client IDs).
+			if ov := a.repoOverview(ctx, d); ov != nil {
+				sum.ManagedRepositories = ov.rows()
+				sum.PendingRestart = ov.Status.PendingRestart
+				sum.FallbackActive = ov.Status.Fallback != ""
+			}
+			return marshal(sum)
 		}},
 	}
 	if withLogs {
