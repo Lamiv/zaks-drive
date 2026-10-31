@@ -16,9 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lamiv/zaks-drive/internal/adminui"
 	"github.com/Lamiv/zaks-drive/internal/config"
+	"github.com/Lamiv/zaks-drive/internal/contentrepo"
 	"github.com/Lamiv/zaks-drive/internal/drain"
 	"github.com/Lamiv/zaks-drive/internal/repoadmin"
+	"github.com/Lamiv/zaks-drive/internal/storage"
 )
 
 type syncBuf struct {
@@ -41,7 +44,9 @@ type adminEnv struct {
 
 const testToken = "a-long-random-admin-token"
 
-func newAdminEnv(t *testing.T, token string) *adminEnv {
+func newAdminEnv(t *testing.T, token string) *adminEnv { return buildAdminEnv(t, token, false) }
+
+func buildAdminEnv(t *testing.T, token string, withUI bool) *adminEnv {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "state")
 	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
@@ -53,6 +58,7 @@ func newAdminEnv(t *testing.T, token string) *adminEnv {
 		t.Fatal(err)
 	}
 	logs := &syncBuf{}
+	ring := adminui.NewRing(200)
 	e := &adminEnv{t: t, state: state, logs: logs, gate: drain.New(time.Second)}
 	mgr := &repoadmin.Manager{StateDir: state, Actor: "api", Load: func() (config.Config, error) { return config.Load(cfgFile) }}
 	applied, _ := mgr.Fingerprint()
@@ -60,11 +66,21 @@ func newAdminEnv(t *testing.T, token string) *adminEnv {
 	ready.Store(true)
 	e.api = &repoAPI{
 		mgr: mgr, token: token, applied: applied, gate: e.gate, ready: &ready, version: "test", drain: 300 * time.Millisecond,
-		log:  slog.New(slog.NewTextHandler(logs, nil)),
+		log:  slog.New(ring.Handler(slog.NewTextHandler(logs, nil))),
 		stop: func() { e.stopped.Add(1) },
+		ring: ring,
 		check: func(context.Context, string) (string, bool, error) {
 			return "report", true, nil
 		},
+	}
+	if withUI {
+		e.api.sessions = adminui.NewSessions()
+		var svc atomic.Pointer[storage.Service]
+		var cs atomic.Pointer[contentrepo.Server]
+		var status atomic.Value
+		status.Store("starting")
+		ui := &uiState{cfg: cfgForUI(), ready: &ready, status: &status, svc: &svc, cs: &cs, mgr: mgr, applied: applied, version: "test"}
+		e.api.diagnose, e.api.settings = ui.diagnose, ui.settings
 	}
 	mux := http.NewServeMux()
 	e.api.register(mux)

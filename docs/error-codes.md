@@ -854,6 +854,7 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`ADMIN_REPO_STATIC`](#admin_repo_static) | 409 | Repository comes from config.yaml |
 | [`ADMIN_REPO_IN_USE`](#admin_repo_in_use) | 409 | Repository is exposed to SAP |
 | [`ADMIN_REPO_INVALID`](#admin_repo_invalid) | 400 | Repository settings rejected |
+| [`ADMIN_CSRF_INVALID`](#admin_csrf_invalid) | 403 | Request not accepted from this page |
 | [`ADMIN_APPLY_BUSY`](#admin_apply_busy) | 409 | A restart is already in progress |
 | [`ADMIN_PURGE_UNSUPPORTED`](#admin_purge_unsupported) | 409 | Only detached local repositories can be purged |
 | [`ADMIN_PURGE_ATTACHED`](#admin_purge_attached) | 409 | The repository is still in use |
@@ -923,6 +924,13 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** The settings do not pass the server's own validation; nothing was changed. The detail names each problem.
 - **Fix:** Correct the settings named and retry.
+
+### `ADMIN_CSRF_INVALID`
+
+**Request not accepted from this page** (HTTP 403)
+
+- **Cause:** A change made with a browser session must come from the admin page itself: it needs the session's CSRF token and an Origin that names this server.
+- **Fix:** Reload the admin page and try again. Scripts should use the Bearer ADMIN_TOKEN instead of a cookie.
 
 ### `ADMIN_APPLY_BUSY`
 

@@ -27,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Lamiv/zaks-drive/internal/accesscheck"
+	"github.com/Lamiv/zaks-drive/internal/adminui"
 	"github.com/Lamiv/zaks-drive/internal/apperr"
 	"github.com/Lamiv/zaks-drive/internal/auth"
 	"github.com/Lamiv/zaks-drive/internal/config"
@@ -124,6 +125,9 @@ func main() {
 		os.Exit(2)
 	}
 	log := observability.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	// The UI's log view reads the server's own events from a bounded in-memory ring.
+	logRing = adminui.NewRing(5000)
+	log = slog.New(logRing.Handler(log.Handler()))
 	slog.SetDefault(log)
 	if flag.Arg(0) == "check" {
 		os.Exit(runCheck(cfg))
@@ -202,7 +206,13 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 	// Resolving site/library IDs needs Graph; retry so the container
 	// survives starting before the network or IdP is reachable.
 	apps := newAppClients(cfg, transport, log)
-	var serving atomic.Pointer[storage.Service] // set once the repositories are resolved
+	var serving atomic.Pointer[storage.Service]  // set once the repositories are resolved
+	var csRef atomic.Pointer[contentrepo.Server] // set once the SAP interface is up
+	ui := &uiState{cfg: cfg, ready: &ready, status: &status, svc: &serving, cs: &csRef, mgr: mgr, applied: applied, version: version}
+	var sessions *adminui.Sessions
+	if cfg.Server.AdminUI {
+		sessions = adminui.NewSessions()
+	}
 	// Repository administration works from the first moment, also while the
 	// repositories cannot be resolved yet, so a broken change can be repaired.
 	(&repoAPI{
@@ -217,7 +227,9 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 			}
 			return ids
 		},
-		stop: func() { restarting.Store(true); stop() },
+		stop:     func() { restarting.Store(true); stop() },
+		sessions: sessions, ring: logRing, diagnose: ui.diagnose, settings: ui.settings,
+		certs: func() *contentrepo.Server { return csRef.Load() },
 		check: func(ctx context.Context, id string) (string, bool, error) {
 			current, _ := config.Load(cfgPath) // a half-valid state still lets one repository be tested
 			return checkRepository(ctx, current, id, gc, tokens, apps)
@@ -297,6 +309,7 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		csRef.Store(cs)
 		go cs.RefreshCertificates(ctx, time.Minute)
 		cs.RegisterAdmin(adminMux, cfg.Server.AdminToken)
 		servers = append(servers, newServer(cfg.Server, cfg.Server.ContentRepoAddr,
@@ -592,3 +605,6 @@ func (a *appClients) checkResolver(rc config.RepositoryConfig) (*graph.Client, a
 // errNoRepositories is the readiness failure of a server whose state
 // directory has no repository yet.
 var errNoRepositories = errors.New("no repository configured")
+
+// logRing holds the recent log events for the admin UI; nil before main sets it.
+var logRing *adminui.Ring

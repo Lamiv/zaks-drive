@@ -43,7 +43,10 @@ Other variables that override `config.yaml` (all optional): `ADAPTER_INTERFACES`
 | `readHeaderTimeout`, `idleTimeout`, `shutdownTimeout` | `10s`, `120s`, `30s` | HTTP server timeouts. There is deliberately no overall read or write timeout, so large transfers can take minutes |
 | `corsOrigins` | `[]` | Browser origins allowed to call the REST API directly (`*` allows all). Empty disables CORS |
 | `tlsCertFile`, `tlsKeyFile` | empty | Serve HTTPS on the REST and SAP listeners. Alternatively terminate TLS in a reverse proxy |
-| `adminToken` | empty | Bearer token for certificate administration. Normally `${ADMIN_TOKEN}` |
+| `adminToken` | empty | Bearer token for the admin API (repositories, certificates, the [admin UI](ui.md)). Normally `${ADMIN_TOKEN}`. Repository administration and the UI refuse to work while it is empty |
+| `stateDir` | empty | Folder for managed repositories: definitions, their secrets and local documents. The supplied Compose files set `STATE_DIR=/var/lib/zaks-drive` (the `state` volume). Without it, `zaks-drive repo` and local repositories are unavailable |
+| `drainTimeout` | `30s` | How long a restart for a repository change waits for running requests (new ones get `503` with `Retry-After`) |
+| `adminUI` | `true` | Serve the [admin UI](ui.md) on the admin listener. It still needs `ADMIN_TOKEN` to log in |
 | `enablePprof` | `false` | Go profiling endpoints on the admin listener. Keep off in production |
 
 ### `graph`

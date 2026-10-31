@@ -171,6 +171,17 @@ None. The UI is off unless `ADMIN_TOKEN` is set, which the shipped setup already
 4. UI assets: overview, repositories, certificates; then diagnostics, logs, audit, settings.
 5. Hardening and the independent review; documentation in `docs/ui.md`.
 
+## Implementation notes
+
+Built as described, with these differences and gaps (user guide: [docs/ui.md](../ui.md)):
+
+- **On by default, token required.** `server.adminUI` defaults to `true`; without `ADMIN_TOKEN` nobody can log in and every changing admin call is refused. This answers the open question below in favour of "on whenever `ADMIN_TOKEN` is set"; `adminUI: false` turns it off.
+- **Session endpoints** are `GET/POST/DELETE /admin/api/v1/session`. Sessions live in memory and end with a restart; the page says so after an apply.
+- **Login throttling** is one global counter (10 wrong tokens, then `429` for a minute), shared by login and Bearer calls, not a per-address limit. Failed and successful logins are audited with the source address.
+- **Not built:** the `POST /validate` dry-run endpoint (a change is validated by the server's loader when it is written and rolled back if invalid), the `server.admin.allowRemote` refusal (the container listens on all interfaces; keeping the published port on loopback is the administrator's responsibility, as the shipped Compose file does), the `iface` log filter, `docs/api/admin-openapi.yaml` and its contract test, and the per-request audit of every change with the source address (changes are audited by repository and action; logins carry the address).
+- **Diagnostics** are the server-side subset: repository definitions and fallback, pending changes, access per repository, SAP certificates. Graph token roles and memory/spool checks are left to `zaks-drive doctor` and `check`.
+- **Testing:** unit and API tests (headers, CSP, session, CSRF, origin, lockout, secret handling, ring buffer), and a headless-browser run (`scripts/ui-smoke.mjs`) against the real server and, for the apply and restart, a Docker container. The browser run found two defects that no other test could (a global name clash that broke the whole page, and a missing explanation after a restart). It is not wired into CI. Not done: an accessibility audit, a pass behind a TLS reverse proxy, and the independent security review that is a precondition for production use.
+
 ## Open questions
 
 Answered by the maintainer and moved to [Decisions so far](#decisions-so-far): the login method for now, roles, restart traffic. Still open:

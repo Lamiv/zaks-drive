@@ -295,6 +295,9 @@ var (
 		"Remove it from SAP first, or repeat the command with the explicit `allowInUse` confirmation.")
 	AdminRepoInvalid = def(AreaCLI, "ADMIN_REPO_INVALID", 400, "Repository settings rejected",
 		"The settings do not pass the server's own validation; nothing was changed. The detail names each problem.", "Correct the settings named and retry.")
+	AdminCSRFInvalid = def(AreaCLI, "ADMIN_CSRF_INVALID", 403, "Request not accepted from this page",
+		"A change made with a browser session must come from the admin page itself: it needs the session's CSRF token and an Origin that names this server.",
+		"Reload the admin page and try again. Scripts should use the Bearer ADMIN_TOKEN instead of a cookie.")
 	AdminApplyBusy = def(AreaCLI, "ADMIN_APPLY_BUSY", 409, "A restart is already in progress",
 		"The server is already draining requests for a restart.", "Wait for it to finish, or cancel it first.")
 	AdminPurgeUnsupported = def(AreaCLI, "ADMIN_PURGE_UNSUPPORTED", 409, "Only detached local repositories can be purged",

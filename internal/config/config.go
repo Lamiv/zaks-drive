@@ -80,10 +80,13 @@ type ServerConfig struct {
 	// DrainTimeout bounds how long a restart for a repository change waits for
 	// running requests (maintenance mode refuses new ones meanwhile).
 	DrainTimeout time.Duration `yaml:"drainTimeout"`
-	CORSOrigins  []string      `yaml:"corsOrigins"`
-	TLSCertFile  string        `yaml:"tlsCertFile"`
-	TLSKeyFile   string        `yaml:"tlsKeyFile"`
-	EnablePprof  bool          `yaml:"enablePprof"`
+	// AdminUI serves the admin web UI on the admin listener (it still needs
+	// ADMIN_TOKEN to log in). Default true.
+	AdminUI     bool     `yaml:"adminUI"`
+	CORSOrigins []string `yaml:"corsOrigins"`
+	TLSCertFile string   `yaml:"tlsCertFile"`
+	TLSKeyFile  string   `yaml:"tlsKeyFile"`
+	EnablePprof bool     `yaml:"enablePprof"`
 	// AdminToken, when set, is required (Bearer) for mutating admin
 	// endpoints such as certificate activation.
 	AdminToken string `yaml:"adminToken"`
@@ -220,6 +223,7 @@ func Default() Config {
 			IdleTimeout:     120 * time.Second,
 			ShutdownTimeout: 30 * time.Second,
 			DrainTimeout:    30 * time.Second,
+			AdminUI:         true,
 		},
 		Graph: GraphConfig{
 			AuthorityURL:     "https://login.microsoftonline.com",

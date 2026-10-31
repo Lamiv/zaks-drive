@@ -664,3 +664,20 @@ type Option func(*options)
 
 // WithClients supplies the per-credential clients of NewService.
 func WithClients(f ClientFunc) Option { return func(o *options) { o.clients = f } }
+
+// RepoState is the readiness of one repository.
+type RepoState struct {
+	ID   string
+	Kind string
+	Err  error
+}
+
+// States checks every repository separately (Ping reports them joined).
+func (s *Service) States(ctx context.Context) []RepoState {
+	out := make([]RepoState, 0, len(s.order))
+	for _, id := range s.order {
+		r := s.repos[id]
+		out = append(out, RepoState{ID: id, Kind: r.backend.Kind(), Err: r.backend.Ready(ctx)})
+	}
+	return out
+}

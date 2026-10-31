@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Lamiv/zaks-drive/internal/adminui"
 	"github.com/Lamiv/zaks-drive/internal/apperr"
+	"github.com/Lamiv/zaks-drive/internal/contentrepo"
 	"github.com/Lamiv/zaks-drive/internal/drain"
 	"github.com/Lamiv/zaks-drive/internal/repoadmin"
 )
@@ -92,6 +95,13 @@ type repoAPI struct {
 	applying atomic.Bool // set once the drain finished and the shutdown began
 
 	started time.Time
+
+	// The UI (RFC 0002). sessions is nil when the UI is disabled.
+	sessions *adminui.Sessions
+	ring     *adminui.Ring
+	certs    func() *contentrepo.Server
+	diagnose func(context.Context) []finding
+	settings func() map[string]any
 	// serving returns the IDs of the repositories the server serves.
 	serving func() []string
 }
@@ -114,41 +124,270 @@ func (a *repoAPI) register(mux *http.ServeMux) {
 	h("POST /admin/api/v1/apply/cancel", a.cancelApply)
 	h("GET /admin/api/v1/audit", a.audit)
 	h("GET /admin/api/v1/detached", a.detached)
+	h("GET /admin/api/v1/logs", a.logs)
+	h("GET /admin/api/v1/settings", a.settingsHandler)
+	h("GET /admin/api/v1/diagnostics", a.diagnostics)
+	if a.certs == nil {
+		a.certs = func() *contentrepo.Server { return nil }
+	}
+	h("GET /admin/api/v1/certificates", a.certList)
+	h("POST /admin/api/v1/certificates/activate", a.certSet(true))
+	h("POST /admin/api/v1/certificates/deactivate", a.certSet(false))
+	if a.sessions != nil {
+		// The login itself needs no session; it is guarded by the token, the Origin check and the lockout.
+		mux.HandleFunc("GET /admin/api/v1/session", a.sessionStatus)
+		mux.HandleFunc("POST /admin/api/v1/session", a.login)
+		mux.HandleFunc("DELETE /admin/api/v1/session", a.logout)
+		ui := adminui.Handler()
+		mux.Handle("GET "+adminui.Path, ui)
+		mux.HandleFunc("GET /admin/ui", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, adminui.Path, http.StatusMovedPermanently)
+		})
+	}
 }
 
-// guard authenticates the caller and slows down guessing: after
-// maxFailures wrong tokens the API answers 429 for a minute.
+// authenticate decides whether the caller may use the admin API. Two
+// credentials exist: the Bearer ADMIN_TOKEN (the command, scripts) and, when
+// the UI is enabled, a session cookie obtained by logging in with that token
+// (the browser). A change made with a cookie must also carry the session's
+// CSRF token and come from this server's own page (Origin). After maxFailures
+// wrong tokens the API answers 429 for a minute, whichever way they arrive.
+func (a *repoAPI) authenticate(w http.ResponseWriter, r *http.Request) bool {
+	w.Header().Set("Cache-Control", "no-store")
+	adminui.SecureHeaders(w.Header())
+	if a.token == "" {
+		apiFail(w, apperr.New(apperr.AdminTokenRequired, "ADMIN_TOKEN is not set"))
+		return false
+	}
+	if !a.notBlocked(w) {
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	if auth != "" && subtle.ConstantTimeCompare([]byte(auth), []byte("Bearer "+a.token)) == 1 {
+		a.clearFailures()
+		return true
+	}
+	if a.sessions != nil {
+		if c, err := r.Cookie(adminui.CookieName); err == nil {
+			if csrf, ok := a.sessions.Lookup(c.Value); ok {
+				if r.Method != http.MethodGet && r.Method != http.MethodHead {
+					if !adminui.SameOrigin(r) || !adminui.CSRFMatches(r, csrf) {
+						apiFail(w, apperr.New(apperr.AdminCSRFInvalid, "missing or wrong CSRF token or Origin"))
+						return false
+					}
+				}
+				return true
+			}
+		}
+	}
+	if auth != "" { // a wrong token counts; a missing credential (a probe by the UI) does not
+		a.recordFailure("api", r)
+	}
+	apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "the Authorization header is missing or does not carry the ADMIN_TOKEN"))
+	return false
+}
+
 func (a *repoAPI) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if a.token == "" {
-			apiFail(w, apperr.New(apperr.AdminTokenRequired, "ADMIN_TOKEN is not set"))
+		if a.authenticate(w, r) {
+			next(w, r)
+		}
+	}
+}
+
+// notBlocked answers 429 while the lockout lasts.
+func (a *repoAPI) notBlocked(w http.ResponseWriter) bool {
+	a.failMu.Lock()
+	defer a.failMu.Unlock()
+	if wait := time.Until(a.blockedTo); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "too many wrong tokens; try again in %d seconds", int(wait.Seconds())+1).WithStatus(http.StatusTooManyRequests))
+		return false
+	}
+	return true
+}
+
+func (a *repoAPI) clearFailures() {
+	a.failMu.Lock()
+	a.failures = 0
+	a.failMu.Unlock()
+}
+
+// recordFailure counts a wrong token, locks the API after maxFailures, and
+// audits it (the source address, never the token).
+func (a *repoAPI) recordFailure(via string, r *http.Request) {
+	a.failMu.Lock()
+	a.failures++
+	locked := a.failures >= maxFailures
+	if locked {
+		a.blockedTo, a.failures = time.Now().Add(failureWindow), 0
+	}
+	a.failMu.Unlock()
+	if locked {
+		a.log.Warn("admin API locked after repeated wrong tokens", "seconds", int(failureWindow.Seconds()), "via", via)
+	}
+	if via == "login" {
+		a.mgr.Audit("login-failed", "-", "from "+remoteHost(r))
+	}
+}
+
+func remoteHost(r *http.Request) string {
+	h, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return h
+}
+
+// ---- session (login with the admin token) ----
+
+func (a *repoAPI) sessionStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	adminui.SecureHeaders(w.Header())
+	if c, err := r.Cookie(adminui.CookieName); err == nil {
+		if csrf, ok := a.sessions.Lookup(c.Value); ok {
+			writeAPI(w, http.StatusOK, map[string]any{"authenticated": true, "csrf": csrf})
 			return
 		}
-		a.failMu.Lock()
-		if time.Now().Before(a.blockedTo) {
-			wait := time.Until(a.blockedTo)
-			a.failMu.Unlock()
-			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-			apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "too many wrong tokens; try again in %d seconds", int(wait.Seconds())+1).WithStatus(http.StatusTooManyRequests))
+	}
+	writeAPI(w, http.StatusOK, map[string]any{"authenticated": false})
+}
+
+func (a *repoAPI) login(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	adminui.SecureHeaders(w.Header())
+	if a.token == "" {
+		apiFail(w, apperr.New(apperr.AdminTokenRequired, "ADMIN_TOKEN is not set"))
+		return
+	}
+	if !a.notBlocked(w) {
+		return
+	}
+	if !adminui.SameOrigin(r) {
+		apiFail(w, apperr.New(apperr.AdminCSRFInvalid, "the login must come from the admin page"))
+		return
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	if err := dec.Decode(&body); err != nil {
+		apiFail(w, apperr.New(apperr.AdminRepoInvalid, "the login body is not the expected JSON"))
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(a.token)) != 1 {
+		a.recordFailure("login", r)
+		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "the token is not the ADMIN_TOKEN"))
+		return
+	}
+	a.clearFailures()
+	id, csrf := a.sessions.Create()
+	http.SetCookie(w, adminui.Cookie(id, r.TLS != nil, a.sessions.Max))
+	a.mgr.Audit("login", "-", "from "+remoteHost(r))
+	writeAPI(w, http.StatusOK, map[string]any{"csrf": csrf})
+}
+
+func (a *repoAPI) logout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	adminui.SecureHeaders(w.Header())
+	if !adminui.SameOrigin(r) {
+		apiFail(w, apperr.New(apperr.AdminCSRFInvalid, "the logout must come from the admin page"))
+		return
+	}
+	if c, err := r.Cookie(adminui.CookieName); err == nil {
+		a.sessions.Delete(c.Value)
+	}
+	http.SetCookie(w, adminui.Cookie("", r.TLS != nil, -1))
+	writeAPI(w, http.StatusOK, map[string]any{"authenticated": false})
+}
+
+// ---- logs, settings, diagnostics, certificates ----
+
+func (a *repoAPI) logs(w http.ResponseWriter, r *http.Request) {
+	n, _ := strconv.Atoi(r.URL.Query().Get("tail"))
+	if n <= 0 || n > 1000 {
+		n = 200
+	}
+	level := slog.LevelInfo
+	if err := level.UnmarshalText([]byte(r.URL.Query().Get("level"))); err != nil {
+		level = slog.LevelInfo
+	}
+	entries := []adminui.Entry{}
+	if a.ring != nil {
+		entries = a.ring.Entries(n, level, r.URL.Query().Get("requestId"))
+	}
+	if entries == nil {
+		entries = []adminui.Entry{}
+	}
+	writeAPI(w, http.StatusOK, entries)
+}
+
+func (a *repoAPI) settingsHandler(w http.ResponseWriter, r *http.Request) {
+	s := map[string]any{}
+	if a.settings != nil {
+		s = a.settings()
+	}
+	writeAPI(w, http.StatusOK, s)
+}
+
+// finding is one server-side diagnostic.
+type finding struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"` // PASS, WARN, FAIL, SKIPPED
+	Detail string `json:"detail,omitempty"`
+	Fix    string `json:"fix,omitempty"`
+}
+
+func (a *repoAPI) diagnostics(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	out := []finding{}
+	if a.diagnose != nil {
+		out = a.diagnose(ctx)
+	}
+	writeAPI(w, http.StatusOK, map[string]any{"value": out})
+}
+
+func (a *repoAPI) certList(w http.ResponseWriter, r *http.Request) {
+	cs := a.certs()
+	if cs == nil {
+		writeAPI(w, http.StatusOK, map[string]any{"value": []any{}})
+		return
+	}
+	list, err := cs.CertificateList(r.Context())
+	if err != nil {
+		apiFail(w, err)
+		return
+	}
+	if list == nil {
+		list = []contentrepo.CertificateInfo{}
+	}
+	writeAPI(w, http.StatusOK, map[string]any{"value": list})
+}
+
+func (a *repoAPI) certSet(active bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cs := a.certs()
+		if cs == nil {
+			apiFail(w, apperr.New(apperr.CLIAdminRouteMissing, "the contentrepo interface is not enabled").WithStatus(http.StatusNotFound))
 			return
 		}
-		a.failMu.Unlock()
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+a.token)) != 1 {
-			a.failMu.Lock()
-			a.failures++
-			if a.failures >= maxFailures {
-				a.blockedTo, a.failures = time.Now().Add(failureWindow), 0
-				a.log.Warn("admin API locked after repeated wrong tokens", "seconds", int(failureWindow.Seconds()))
-			}
-			a.failMu.Unlock()
-			apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "the Authorization header is missing or does not carry the ADMIN_TOKEN"))
+		var body struct {
+			ContRep string `json:"contRep"`
+			AuthID  string `json:"authId"`
+		}
+		if err := decodeBody(r, w, &body); err != nil || body.ContRep == "" || body.AuthID == "" {
+			apiFail(w, apperr.New(apperr.CertRequestInvalid, "the body must be JSON like {\"contRep\":\"Z1\",\"authId\":\"CN=...\"}"))
 			return
 		}
-		a.failMu.Lock()
-		a.failures = 0
-		a.failMu.Unlock()
-		next(w, r)
+		rec, err := cs.SetCertificateActive(r.Context(), body.ContRep, body.AuthID, active)
+		if err != nil {
+			apiFail(w, err)
+			return
+		}
+		a.mgr.Audit(map[bool]string{true: "cert-activate", false: "cert-deactivate"}[active], body.ContRep, "")
+		writeAPI(w, http.StatusOK, rec)
 	}
 }
 

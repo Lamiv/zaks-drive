@@ -23,8 +23,8 @@ See the [README feature table](../README.md#what-is-verified) for the evidence b
 
 Drafts for discussion, not approved or scheduled:
 
-- [RFC 0001](rfcs/0001-repositories-and-storage-backends.md): several repositories (`Z1`, `ZH`, `AD`, ...), each with a local-folder or SharePoint backend and its own settings and secrets, managed from `zaks-drive repo ...`.
-- [RFC 0002](rfcs/0002-server-admin-ui.md): an admin UI built into the server for repositories, certificates and diagnostics.
+- [RFC 0001](rfcs/0001-repositories-and-storage-backends.md): several repositories (`Z1`, `ZH`, `AD`, ...), each with a local-folder or SharePoint backend and its own settings and secrets, managed from `zaks-drive repo ...`. **Implemented** (see [the command guide](cli.md#repositories-several-storage-locations)); awaiting maintainer decision and real-system verification.
+- [RFC 0002](rfcs/0002-server-admin-ui.md): an admin UI built into the server for repositories, certificates and diagnostics. **Implemented** (see [the admin UI](ui.md)); awaiting the independent security review and a pass on a real Docker host.
 
 Have an idea of your own? Start a discussion or write an [RFC](rfcs/README.md). Accepted proposals will be listed here with a link; being listed does not mean scheduled.
 
