@@ -2,6 +2,8 @@
 
 Install ZAKS Drive on a Linux server with Docker and connect it to SharePoint Online or OneDrive for Business. To try it without a tenant first, use the [quickstart](quickstart.md).
 
+> **Looking for the full path?** The [setup and usage guide](guide.md) takes you from install to SAP, several repositories, the admin page, backup and updates, with commands and checks at every step; every flag is in the [CLI reference](cli-reference.md).
+
 ## The quick way: the zaks-drive command
 
 On Linux, the [`zaks-drive` command](cli.md) does the steps below for you: `install.sh` (verified download), `zaks-drive setup` (validated configuration, secrets at mode 600), `zaks-drive start`, `zaks-drive doctor`. This page describes what happens underneath and the manual way from a source checkout.

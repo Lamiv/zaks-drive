@@ -56,7 +56,7 @@ Follow [OAC0 configuration and certificates](oac0-configuration.md). In short:
 
 1. Create repository `Z1`: storage type `04`, document area `DMS`, version `0047`, your host and port, script `ContentServer/ContentServer.dll`.
 2. Run the connection test.
-3. **Send certificate**, then `zaks-drive certs list`, compare the fingerprint with STRUST, then `zaks-drive certs activate Z1 '<authId>'`.
+3. **Send certificate**, then list it (admin page, "SAP certificates", or `docker compose exec adapter /zaks-drive-server certs list`), compare the fingerprint with STRUST, and activate it there (or `certs activate Z1 '<authId>'`). A complete walk-through: [the guide](../guide.md#scenario-3-connect-sap-s4hana-to-sharepoint).
 
 Without step 3 every signed request fails with [`CS_CERT_INACTIVE`](../error-codes.md#cs_cert_inactive).
 

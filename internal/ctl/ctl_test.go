@@ -1,6 +1,7 @@
 package ctl
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -556,6 +557,34 @@ func TestOnlyDockerAndSttyCanBeStarted(t *testing.T) {
 		for _, bad := range []string{`"sh"`, `"bash"`, `"-c"`, `"cmd"`, `"sudo"`, `"su"`} {
 			if strings.Contains(src, "Run(ctx, "+bad) || strings.Contains(src, "exec.Command("+bad) {
 				t.Errorf("%s runs %s: no shell and no privilege escalation", name, bad)
+			}
+		}
+	}
+}
+
+// docs/cli-reference.md lists every flag of every command, so it cannot fall behind: the test asks
+// each command for its flags with -h and fails for any that the page does not mention.
+func TestCLIReferenceDocumentsEveryFlag(t *testing.T) {
+	b, err := os.ReadFile("../../docs/cli-reference.md")
+	must(t, err)
+	doc := string(b)
+	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
+	commands := [][]string{
+		{"setup"}, {"config", "validate"}, {"start"}, {"stop"}, {"restart"}, {"status"}, {"logs"}, {"doctor"}, {"check"},
+		{"update"}, {"rollback"}, {"version"}, {"support", "bundle"}, {"admin", "reset-password"},
+		{"repo", "list"}, {"repo", "show"}, {"repo", "add"}, {"repo", "update"}, {"repo", "remove"}, {"repo", "check"}, {"repo", "purge"},
+	}
+	for _, c := range commands {
+		var errOut bytes.Buffer
+		app := &App{Out: &bytes.Buffer{}, Err: &errOut, In: strings.NewReader(""), Version: "x", Getenv: func(string) string { return "" }}
+		app.Main(append(append([]string{}, c...), "-h"))
+		found := flagLine.FindAllStringSubmatch(errOut.String(), -1)
+		if len(found) == 0 {
+			t.Errorf("%v: no flags found in the -h output; the test cannot check this command:\n%s", c, errOut.String())
+		}
+		for _, m := range found {
+			if !strings.Contains(doc, "--"+m[1]) {
+				t.Errorf("docs/cli-reference.md does not document `--%s` of `zaks-drive %s`", m[1], strings.Join(c, " "))
 			}
 		}
 	}

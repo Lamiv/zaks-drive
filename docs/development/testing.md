@@ -29,7 +29,7 @@ The REST and Content Server suites also run over the **local backend**: `ZAKS_TE
 
 | Area | Where | What it covers |
 |---|---|---|
-| Command | `internal/ctl` | Parsing and exit codes, deployment discovery, Docker prerequisites, the exact arguments of every Docker call (no destructive operation, only the deployment's own compose file), lifecycle, status, log filtering and sanitizing, setup (interactive and not), 19 diagnostics each in each of its states, support-bundle secret exclusion, verified update, hostile archives, automatic rollback |
+| Command | `internal/ctl` | Parsing and exit codes, deployment discovery, Docker prerequisites, the exact arguments of every Docker call (no destructive operation, only the deployment's own compose file), lifecycle, status, log filtering and sanitizing, setup (interactive and not), 22 diagnostics each in each of its states, support-bundle secret exclusion, verified update, hostile archives, automatic rollback |
 | Release and installer | `scripts/test_install.sh` | Release bundles for both architectures, reproducible checksums, bundle contents, architecture detection, install, tampered and malformed downloads, hostile archives, unwritable prefix, no `sudo`, attestation stand-ins |
 
 `sh scripts/test_install.sh` needs Go, tar, gzip, curl and sha256sum; it uses no network and no credentials (`docker run --rm -v "$PWD:/src" -w /src golang:1.25 sh scripts/test_install.sh`). Real Docker is not used by the unit tests; see [CLI design](cli-design.md) for how the command was also checked against real Docker Compose.

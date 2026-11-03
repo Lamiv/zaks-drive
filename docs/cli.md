@@ -433,12 +433,13 @@ gh attestation verify zaks-drive_0.1.0-beta.1_linux_amd64.tar.gz --repo Lamiv/za
 
 ## Uninstall
 
-There is deliberately no `uninstall` command: removal is destructive and you should see each step. Documents live in SharePoint and are **not** affected by any step below; the container holds only the temporary `spool` volume.
+There is deliberately no `uninstall` command: removal is destructive and you should see each step. Documents of **SharePoint** repositories live in SharePoint and are not affected by any step below. **Local repositories keep their documents, the repository definitions, secrets, the admin password and the audit log in the `state` volume, and `down -v` deletes that volume.** Back it up first ([backup guide](operations/backup-recovery.md#the-state-volume)) or never use `-v`.
 
 ```bash
 zaks-drive stop --dir /opt/zaks-drive                              # 1. stop (keeps everything)
-docker compose -f /opt/zaks-drive/docker-compose.yml down          # 2. remove the containers (keeps the volume)
-docker compose -f /opt/zaks-drive/docker-compose.yml down -v       #    optional: also the spool volume (temporary upload data)
+docker compose -f /opt/zaks-drive/docker-compose.yml down          # 2. remove the containers (keeps the volumes, including state)
+docker volume ls --filter name=spool                               #    optional: remove only the spool volume (temporary upload data):
+# docker volume rm <project>_spool                                 #    NEVER `down -v` on a deployment that has local repositories
 docker image rm zaks-drive:0.1.0-beta.1                            # 3. remove an image you no longer need (compose needs ZAKS_DRIVE_VERSION set)
 rm -r /opt/zaks-drive                                              # 4. the deployment directory: this deletes .env and config.yaml
 rm ~/.local/bin/zaks-drive && rm -r ~/.local/share/zaks-drive      # 5. the command and the release payloads
