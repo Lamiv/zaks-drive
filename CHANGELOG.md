@@ -8,6 +8,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ### Added
 
+- **Multiple repositories with local or SharePoint storage** ([RFC 0001](docs/rfcs/0001-repositories-and-storage-backends.md)). `zaks-drive repo list|show|add|update|remove|check|purge` manages repositories such as `Z1`, `ZH`, `AD` (managed IDs are exactly 2 characters). A repository stores its documents in SharePoint/OneDrive (optionally with its **own Entra application**) or in a **local folder** of the server (confined to the folder, links ignored, 0 to 99 versions kept). Definitions, secrets and local documents live in a new `state` volume (`/var/lib/zaks-drive`); secrets are separate mode-600 files, never in a definition, a flag or a log. Repositories in `config.yaml` keep working unchanged.
+- **Applying changes by a drained restart**: new requests get `503` with `Retry-After` (SAP retries), running requests finish (`server.drainTimeout`, default 30 s), the server restarts. If the new definitions are invalid the server keeps serving the last working state and says so. A server with a state directory may start with no repository yet (not ready until one is added).
+- **Admin API** (`/admin/api/v1`) for repositories, checks, apply, certificates, diagnostics, logs, audit and settings. It requires `ADMIN_TOKEN` and refuses to work without one.
+- **Admin UI** ([RFC 0002](docs/rfcs/0002-server-admin-ui.md), [guide](docs/ui.md)) on the admin listener: repositories, SAP certificates, diagnostics, logs, audit, settings, "Apply and restart". Token login with a short session cookie, CSRF and Origin checks, strict CSP, nothing loaded from other sites. `server.adminUI: false` turns it off. **Not yet independently security-reviewed.**
+- `repo purge` deletes the documents of a *detached local* repository, only on the Docker host, with a plan, a time-limited challenge bound to the folder's state, the typed ID and an explicit flag. It does not exist in the admin API or UI.
+- `status`, `doctor` (new `repositories` diagnostic) and the support bundle show repositories without locations or application IDs. New error codes (`CFG_REPO_*`, `ADMIN_*`, `THUMBNAIL_UNAVAILABLE`).
 - **`zaks-drive` management command** (`cmd/zaks-drive`): `setup` (interactive or non-interactive), `config validate`, `start`, `stop`, `restart`, `status`, `logs`, `doctor` (19 documented diagnostics), `check`, `update`, `rollback`, `support bundle`. See [docs/cli.md](docs/cli.md). The server is now the separate binary `zaks-drive-server`; inside the image `/zaks-drive` and `/adapter` remain as compatibility names of the server.
 - Linux release bundles (amd64, arm64) built reproducibly by `scripts/build-release.sh`, a verifying installer `scripts/install.sh`, offline installer tests (`scripts/test_install.sh`), and a manual release workflow with provenance attestation (draft release only).
 - `BIND_ADDRESS` in `.env` selects the host address of the REST and SAP ports (default `0.0.0.0`, unchanged behaviour).
@@ -23,6 +29,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ### Changed
 
+- **Upgrade note.** The Compose files add a `state` volume and `STATE_DIR`. `/readyz` is now ready only when **every** repository is reachable (it used to check the first). Global `graph.*` credentials are only required when a repository uses them. Storage is now behind a backend interface; REST routes, SAP behaviour, configuration keys, ports and metric names are unchanged.
 - Documentation files moved: `docs/openapi.yaml` to `docs/api/`, SAP documents to `docs/sap/`, `docs/load-test-results.md` to `docs/development/`. `SETUP.md`, `docs/content-server.md` and `docs/load-test-results.md` remain as pointers.
 - The Compose file builds the image `zaks-drive:latest`. The service, volume, ports, routes, configuration keys and metric names are unchanged.
 
