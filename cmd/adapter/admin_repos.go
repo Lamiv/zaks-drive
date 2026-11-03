@@ -89,6 +89,7 @@ type repoAPI struct {
 	failMu    sync.Mutex
 	failures  int
 	blockedTo time.Time
+	lockLevel int
 
 	applyMu  sync.Mutex
 	cancelCh chan struct{}
@@ -98,6 +99,7 @@ type repoAPI struct {
 
 	// The UI (RFC 0002). sessions is nil when the UI is disabled.
 	sessions *adminui.Sessions
+	account  *adminui.Account
 	ring     *adminui.Ring
 	certs    func() *contentrepo.Server
 	diagnose func(context.Context) []finding
@@ -137,6 +139,7 @@ func (a *repoAPI) register(mux *http.ServeMux) {
 		// The login itself needs no session; it is guarded by the token, the Origin check and the lockout.
 		mux.HandleFunc("GET /admin/api/v1/session", a.sessionStatus)
 		mux.HandleFunc("POST /admin/api/v1/session", a.login)
+		mux.HandleFunc("POST /admin/api/v1/session/password", a.changePassword)
 		mux.HandleFunc("DELETE /admin/api/v1/session", a.logout)
 		ui := adminui.Handler()
 		mux.Handle("GET "+adminui.Path, ui)
@@ -147,29 +150,24 @@ func (a *repoAPI) register(mux *http.ServeMux) {
 }
 
 // authenticate decides whether the caller may use the admin API. Two
-// credentials exist: the Bearer ADMIN_TOKEN (the command, scripts) and, when
-// the UI is enabled, a session cookie obtained by logging in with that token
-// (the browser). A change made with a cookie must also carry the session's
-// CSRF token and come from this server's own page (Origin). After maxFailures
-// wrong tokens the API answers 429 for a minute, whichever way they arrive.
+// credentials exist: a browser session (the UI user logs in with the admin
+// user name and password) and the Bearer ADMIN_TOKEN (the command, scripts).
+//
+// A session that was opened with the default or reset password may do
+// nothing but change it. A change made with a session must also carry the
+// session's CSRF token and come from this server's own page (Origin). After
+// maxFailures wrong secrets the API answers 429 for a while that doubles with
+// each repeated lockout, whichever way they arrive.
 func (a *repoAPI) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
 	adminui.SecureHeaders(w.Header())
-	if a.token == "" {
-		apiFail(w, apperr.New(apperr.AdminTokenRequired, "ADMIN_TOKEN is not set"))
-		return false
-	}
-	if !a.notBlocked(w) {
-		return false
-	}
-	auth := r.Header.Get("Authorization")
-	if auth != "" && subtle.ConstantTimeCompare([]byte(auth), []byte("Bearer "+a.token)) == 1 {
-		a.clearFailures()
-		return true
-	}
 	if a.sessions != nil {
 		if c, err := r.Cookie(adminui.CookieName); err == nil {
-			if csrf, ok := a.sessions.Lookup(c.Value); ok {
+			if csrf, mustChange, ok := a.sessions.Lookup(c.Value); ok {
+				if mustChange {
+					apiFail(w, apperr.New(apperr.AdminPasswordChangeRequired, "the session was opened with the default password"))
+					return false
+				}
 				if r.Method != http.MethodGet && r.Method != http.MethodHead {
 					if !adminui.SameOrigin(r) || !adminui.CSRFMatches(r, csrf) {
 						apiFail(w, apperr.New(apperr.AdminCSRFInvalid, "missing or wrong CSRF token or Origin"))
@@ -179,6 +177,18 @@ func (a *repoAPI) authenticate(w http.ResponseWriter, r *http.Request) bool {
 				return true
 			}
 		}
+	}
+	if a.token == "" {
+		apiFail(w, apperr.New(apperr.AdminTokenRequired, "ADMIN_TOKEN is not set and there is no valid session"))
+		return false
+	}
+	if !a.notBlocked(w) {
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	if auth != "" && subtle.ConstantTimeCompare([]byte(auth), []byte("Bearer "+a.token)) == 1 {
+		a.clearFailures()
+		return true
 	}
 	if auth != "" { // a wrong token counts; a missing credential (a probe by the UI) does not
 		a.recordFailure("api", r)
@@ -201,7 +211,7 @@ func (a *repoAPI) notBlocked(w http.ResponseWriter) bool {
 	defer a.failMu.Unlock()
 	if wait := time.Until(a.blockedTo); wait > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "too many wrong tokens; try again in %d seconds", int(wait.Seconds())+1).WithStatus(http.StatusTooManyRequests))
+		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "too many wrong attempts; try again in %d seconds", int(wait.Seconds())+1).WithStatus(http.StatusTooManyRequests))
 		return false
 	}
 	return true
@@ -209,22 +219,29 @@ func (a *repoAPI) notBlocked(w http.ResponseWriter) bool {
 
 func (a *repoAPI) clearFailures() {
 	a.failMu.Lock()
-	a.failures = 0
+	a.failures, a.lockLevel = 0, 0
 	a.failMu.Unlock()
 }
 
-// recordFailure counts a wrong token, locks the API after maxFailures, and
-// audits it (the source address, never the token).
+const maxLockout = 15 * time.Minute
+
+// recordFailure counts a wrong secret and locks the API after maxFailures.
+// The lock lasts a minute and doubles with every repeated lockout (up to 15
+// minutes) until a correct secret resets it. It is audited with the source
+// address, never the value.
 func (a *repoAPI) recordFailure(via string, r *http.Request) {
 	a.failMu.Lock()
 	a.failures++
 	locked := a.failures >= maxFailures
+	var d time.Duration
 	if locked {
-		a.blockedTo, a.failures = time.Now().Add(failureWindow), 0
+		d = min(failureWindow<<a.lockLevel, maxLockout)
+		a.lockLevel = min(a.lockLevel+1, 10)
+		a.blockedTo, a.failures = time.Now().Add(d), 0
 	}
 	a.failMu.Unlock()
 	if locked {
-		a.log.Warn("admin API locked after repeated wrong tokens", "seconds", int(failureWindow.Seconds()), "via", via)
+		a.log.Warn("admin API locked after repeated wrong credentials", "seconds", int(d.Seconds()), "via", via)
 	}
 	if via == "login" {
 		a.mgr.Audit("login-failed", "-", "from "+remoteHost(r))
@@ -239,28 +256,37 @@ func remoteHost(r *http.Request) string {
 	return h
 }
 
-// ---- session (login with the admin token) ----
+// ---- session (log in with the admin user name and password) ----
 
 func (a *repoAPI) sessionStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	adminui.SecureHeaders(w.Header())
 	if c, err := r.Cookie(adminui.CookieName); err == nil {
-		if csrf, ok := a.sessions.Lookup(c.Value); ok {
-			writeAPI(w, http.StatusOK, map[string]any{"authenticated": true, "csrf": csrf})
+		if csrf, must, ok := a.sessions.Lookup(c.Value); ok {
+			writeAPI(w, http.StatusOK, map[string]any{"authenticated": true, "csrf": csrf, "mustChangePassword": must})
 			return
 		}
 	}
 	writeAPI(w, http.StatusOK, map[string]any{"authenticated": false})
 }
 
+// accountReady refuses when the account cannot be used at all.
+func (a *repoAPI) accountReady(w http.ResponseWriter) bool {
+	switch {
+	case a.account == nil || !a.account.Available():
+		apiFail(w, apperr.New(apperr.AdminStateUnavailable, "the admin password cannot be stored without a state directory (server.stateDir)"))
+	case a.account.Locked():
+		apiFail(w, apperr.New(apperr.AdminAccountLocked, "admin.json is unreadable"))
+	default:
+		return true
+	}
+	return false
+}
+
 func (a *repoAPI) login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	adminui.SecureHeaders(w.Header())
-	if a.token == "" {
-		apiFail(w, apperr.New(apperr.AdminTokenRequired, "ADMIN_TOKEN is not set"))
-		return
-	}
-	if !a.notBlocked(w) {
+	if !a.accountReady(w) || !a.notBlocked(w) {
 		return
 	}
 	if !adminui.SameOrigin(r) {
@@ -268,23 +294,85 @@ func (a *repoAPI) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Token string `json:"token"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-	if err := dec.Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 		apiFail(w, apperr.New(apperr.AdminRepoInvalid, "the login body is not the expected JSON"))
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(a.token)) != 1 {
+	if !a.account.Verify(body.Username, body.Password) {
 		a.recordFailure("login", r)
-		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "the token is not the ADMIN_TOKEN"))
+		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "the user name or password is not correct"))
 		return
 	}
 	a.clearFailures()
-	id, csrf := a.sessions.Create()
+	must := a.account.IsDefault()
+	id, csrf := a.sessions.Create(must)
 	http.SetCookie(w, adminui.Cookie(id, r.TLS != nil, a.sessions.Max))
-	a.mgr.Audit("login", "-", "from "+remoteHost(r))
-	writeAPI(w, http.StatusOK, map[string]any{"csrf": csrf})
+	a.mgr.Audit("login", "-", fmt.Sprintf("from %s mustChange=%v", remoteHost(r), must))
+	if must {
+		a.log.Warn("admin login with the default password; the page requires a new password before anything else", "from", remoteHost(r))
+	}
+	writeAPI(w, http.StatusOK, map[string]any{"csrf": csrf, "mustChangePassword": must})
+}
+
+// changePassword sets a new password. It needs a session (also one that must
+// change the password), the CSRF token and the current password. Success ends
+// every other session and starts a fresh one.
+func (a *repoAPI) changePassword(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	adminui.SecureHeaders(w.Header())
+	if !a.accountReady(w) {
+		return
+	}
+	var csrf string
+	var ok bool
+	if c, err := r.Cookie(adminui.CookieName); err == nil {
+		csrf, _, ok = a.sessions.Lookup(c.Value)
+	}
+	if !ok {
+		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "log in first"))
+		return
+	}
+	if !adminui.SameOrigin(r) || !adminui.CSRFMatches(r, csrf) {
+		apiFail(w, apperr.New(apperr.AdminCSRFInvalid, "missing or wrong CSRF token or Origin"))
+		return
+	}
+	if !a.notBlocked(w) {
+		return
+	}
+	var body struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		apiFail(w, apperr.New(apperr.AdminRepoInvalid, "the body is not the expected JSON"))
+		return
+	}
+	left, err := a.account.SetPassword(body.Current, body.New)
+	var pe *adminui.PasswordError
+	switch {
+	case errors.Is(err, adminui.ErrWrongPassword):
+		a.recordFailure("login", r)
+		apiFail(w, apperr.New(apperr.AuthAdminUnauthorized, "the current password is not correct"))
+		return
+	case errors.As(err, &pe):
+		apiFail(w, apperr.New(apperr.AdminPasswordRejected, "%s", pe.Reason))
+		return
+	case err != nil:
+		apiFail(w, apperr.New(apperr.AdminStateUnavailable, "the password could not be saved: %v", err).Wrap(err))
+		return
+	}
+	a.clearFailures()
+	id, newCSRF := a.sessions.ReplaceAll(false)
+	http.SetCookie(w, adminui.Cookie(id, r.TLS != nil, a.sessions.Max))
+	a.mgr.Audit("password-changed", "-", "from "+remoteHost(r))
+	a.log.Info("admin password changed; other sessions ended", "from", remoteHost(r))
+	if left {
+		a.log.Warn("the NO_ADMIN file could not be removed; it is ignored because it is older than this change")
+	}
+	writeAPI(w, http.StatusOK, map[string]any{"csrf": newCSRF, "mustChangePassword": false})
 }
 
 func (a *repoAPI) logout(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +529,8 @@ type statusBody struct {
 	// Serving lists the repositories the running server serves right now (a
 	// purge must never touch one of them).
 	Serving []string `json:"serving"`
+	// AdminPasswordDefault is true while the well-known admin/admin login is still active.
+	AdminPasswordDefault bool `json:"adminPasswordDefault"`
 }
 
 func (a *repoAPI) status(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +542,7 @@ func (a *repoAPI) status(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, http.StatusOK, statusBody{
 		Version: a.version, Ready: a.ready.Load(), PendingRestart: now != a.applied, Fallback: a.fallback,
 		Draining: a.gate.Draining(), InFlight: a.gate.InFlight(), DrainSeconds: int(a.drain.Seconds()),
-		StartedAt: a.started, Serving: a.servingIDs(),
+		StartedAt: a.started, Serving: a.servingIDs(), AdminPasswordDefault: a.account != nil && a.account.IsDefault(),
 	})
 }
 

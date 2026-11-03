@@ -75,6 +75,8 @@ func buildAdminEnv(t *testing.T, token string, withUI bool) *adminEnv {
 	}
 	if withUI {
 		e.api.sessions = adminui.NewSessions()
+		acc, _ := adminui.OpenAccount(state)
+		e.api.account = acc
 		var svc atomic.Pointer[storage.Service]
 		var cs atomic.Pointer[contentrepo.Server]
 		var status atomic.Value

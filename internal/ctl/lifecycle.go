@@ -212,6 +212,9 @@ func (a *App) printEndpoints(d *Deployment, cfg config.Config) {
 		a.printf("  SAP Content Server  http://%s:%d/ContentServer/ContentServer.dll\n", host, p.CS)
 	}
 	a.printf("  Health and metrics  http://127.0.0.1:%d  (localhost only)\n", p.Admin)
+	if cfg.Server.AdminUI && d.hasState() {
+		a.printf("  Admin page          http://127.0.0.1:%d/admin/ui/  (localhost only; first login: admin / admin, you will be asked to choose a new password at once)\n", p.Admin)
+	}
 }
 
 // printRecentLogs prints the last lines of sanitized logs to stderr, for failure diagnosis.

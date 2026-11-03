@@ -80,8 +80,8 @@ type ServerConfig struct {
 	// DrainTimeout bounds how long a restart for a repository change waits for
 	// running requests (maintenance mode refuses new ones meanwhile).
 	DrainTimeout time.Duration `yaml:"drainTimeout"`
-	// AdminUI serves the admin web UI on the admin listener (it still needs
-	// ADMIN_TOKEN to log in). Default true.
+	// AdminUI serves the admin web UI on the admin listener. Login is the user
+	// admin with a password chosen at the first login (it needs StateDir). Default true.
 	AdminUI     bool     `yaml:"adminUI"`
 	CORSOrigins []string `yaml:"corsOrigins"`
 	TLSCertFile string   `yaml:"tlsCertFile"`

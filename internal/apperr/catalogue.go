@@ -298,6 +298,15 @@ var (
 	AdminCSRFInvalid = def(AreaCLI, "ADMIN_CSRF_INVALID", 403, "Request not accepted from this page",
 		"A change made with a browser session must come from the admin page itself: it needs the session's CSRF token and an Origin that names this server.",
 		"Reload the admin page and try again. Scripts should use the Bearer ADMIN_TOKEN instead of a cookie.")
+	AdminPasswordChangeRequired = def(AreaCLI, "ADMIN_PASSWORD_CHANGE_REQUIRED", 403, "Set a new admin password first",
+		"The session was opened with the default (or reset) password admin/admin, which may only be used to choose a new password.",
+		"Choose a new password in the admin page (at least 12 characters), then continue.")
+	AdminPasswordRejected = def(AreaCLI, "ADMIN_PASSWORD_REJECTED", 400, "The new password is not accepted",
+		"The new password is too short (minimum 12 characters), too easy to guess, the same as the current one, or contains characters that are not allowed.",
+		"Use a longer password; a few unrelated words make a good passphrase.")
+	AdminAccountLocked = def(AreaCLI, "ADMIN_ACCOUNT_LOCKED", 423, "The admin account record is unreadable",
+		"admin.json in the state directory exists but cannot be read, so nobody can log in (the server never falls back to the default password).",
+		"Reset the account: `zaks-drive admin reset-password`, or create an empty file named NO_ADMIN in the state volume and restart the server.")
 	AdminApplyBusy = def(AreaCLI, "ADMIN_APPLY_BUSY", 409, "A restart is already in progress",
 		"The server is already draining requests for a restart.", "Wait for it to finish, or cancel it first.")
 	AdminPurgeUnsupported = def(AreaCLI, "ADMIN_PURGE_UNSUPPORTED", 409, "Only detached local repositories can be purged",

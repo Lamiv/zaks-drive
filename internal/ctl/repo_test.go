@@ -15,15 +15,17 @@ import (
 
 // fakeServer is a stateful stand-in for the server's repository admin API.
 type fakeServer struct {
-	mu       sync.Mutex
-	repos    map[string]repoadmin.View
-	detached []repoadmin.Spec
-	started  time.Time
-	serving  []string
-	pending  bool
-	fallback string
-	applied  int
-	bodies   []string
+	mu           sync.Mutex
+	repos        map[string]repoadmin.View
+	detached     []repoadmin.Spec
+	started      time.Time
+	serving      []string
+	pending      bool
+	fallback     string
+	adminDefault bool
+	adminResets  int
+	applied      int
+	bodies       []string
 }
 
 func newFakeServer() *fakeServer {
@@ -45,7 +47,7 @@ func (f *fakeServer) handler() http.Handler {
 	mux.HandleFunc("GET /admin/api/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		writeJSONBody(w, 200, repoStatus{Version: "test", Ready: true, PendingRestart: f.pending, Fallback: f.fallback, DrainSeconds: 30, StartedAt: f.started, Serving: f.serving})
+		writeJSONBody(w, 200, repoStatus{Version: "test", Ready: true, PendingRestart: f.pending, Fallback: f.fallback, DrainSeconds: 30, StartedAt: f.started, Serving: f.serving, AdminPasswordDefault: f.adminDefault})
 	})
 	mux.HandleFunc("GET /admin/api/v1/repositories", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -556,4 +558,59 @@ func TestStatusDoctorAndBundleShowRepositoriesWithoutLocations(t *testing.T) {
 	if !strings.Contains(files["config-summary.json"], `"managedRepositories"`) || !strings.Contains(files["config-summary.json"], `"id": "AD"`) && !strings.Contains(files["config-summary.json"], `"id":"AD"`) {
 		t.Errorf("the config summary lacks the managed repositories:\n%s", files["config-summary.json"])
 	}
+}
+
+func TestAdminResetPasswordCreatesTheRequestOnTheHostAndRestartsThroughTheDrain(t *testing.T) {
+	e, fs := newRepoEnv(t)
+	oneOffHandler(e, `{"ok":true,"result":{"requested":true}}`)
+
+	if rc := e.main("admin", "reset-password", "--dir", e.dir); rc != ExitDeclined || e.calledDockerRun() {
+		t.Fatalf("without --yes and a terminal nothing may happen: %d\n%s", rc, e.both())
+	}
+	rc := e.main("admin", "reset-password", "--yes", "--dir", e.dir)
+	if rc != ExitOK {
+		t.Fatalf("exit %d\n%s", rc, e.both())
+	}
+	if !e.run.has("adapter repos admin-reset") {
+		t.Fatalf("the request must be created by a one-off container: %v", e.run.all())
+	}
+	if fs.applied != 1 {
+		t.Fatalf("the server must be restarted through the drain, applied=%d", fs.applied)
+	}
+	for _, w := range []string{"admin / admin", "choose a new password", "SSH tunnel", "ADMIN_TOKEN used by this command are not touched", "Applied."} {
+		if !strings.Contains(e.out.String(), w) {
+			t.Errorf("output lacks %q:\n%s", w, e.out.String())
+		}
+	}
+
+	// --no-restart only records the request
+	fs.applied = 0
+	if rc := e.main("admin", "reset-password", "--yes", "--no-restart", "--dir", e.dir); rc != ExitOK || fs.applied != 0 {
+		t.Fatalf("no-restart: %d applied=%d\n%s", rc, fs.applied, e.both())
+	}
+	if rc := e.main("admin", "frobnicate"); rc != ExitUsage {
+		t.Errorf("usage: %d", rc)
+	}
+}
+
+func TestAdminResetFailsClearlyWhenTheOneOffFails(t *testing.T) {
+	e, fs := newRepoEnv(t)
+	oneOffHandler(e, `{"ok":false,"error":{"code":"ADMIN_STATE_UNAVAILABLE","title":"x","detail":"cannot create NO_ADMIN","fix":"mount the state volume"}}`)
+	rc := e.main("admin", "reset-password", "--yes", "--dir", e.dir)
+	if rc != ExitFail || fs.applied != 0 || !strings.Contains(e.err.String(), "ADMIN_STATE_UNAVAILABLE") {
+		t.Fatalf("a failed request must not restart the server: %d applied=%d\n%s", rc, fs.applied, e.both())
+	}
+}
+
+func TestDoctorWarnsWhileTheDefaultAdminPasswordIsActive(t *testing.T) {
+	e, fs := newRepoEnv(t)
+	fs.adminDefault = true
+	f, _ := e.doctor(t)
+	wantStatus(t, f, "admin-password", StatusWarn)
+	if !strings.Contains(f["admin-password"].Fix, "server.adminUI: false") {
+		t.Errorf("the fix must say how to turn the page off: %s", f["admin-password"].Fix)
+	}
+	fs.adminDefault = false
+	f, _ = e.doctor(t)
+	wantStatus(t, f, "admin-password", StatusPass)
 }

@@ -14,7 +14,15 @@ http://127.0.0.1:9090/admin/ui/        (the port is ADMIN_PORT in .env)
 
 From another machine use an SSH tunnel (`ssh -L 9090:127.0.0.1:9090 <host>`) or a TLS reverse proxy that you operate. Do **not** publish the admin port on a public address: it also serves metrics and the certificate endpoints.
 
-Log in with the **admin token** (`ADMIN_TOKEN` in `.env`). If `ADMIN_TOKEN` is empty nobody can log in and every changing admin call is refused; `zaks-drive setup` generates a token.
+### Logging in
+
+The UI is **on by default**. The login is the user **`admin`**:
+
+1. **First login:** `admin` / `admin`. This well-known pair works **only to choose a new password**: the page shows nothing but the "choose a new password" form, and the server refuses every other call from that session. Pick at least 12 characters (a few unrelated words make a good passphrase; no special characters are required, and password managers work).
+2. **After that** only your password works. Changing it ends every other session.
+3. **Forgot it?** `zaks-drive admin reset-password` on the Docker host (or create an empty file `NO_ADMIN` in the state volume and restart): the login becomes `admin` / `admin` again to be changed at once, and the server deletes `NO_ADMIN` when the new password is set. Details: [the command guide](cli.md#admin-ui-password).
+
+The password is stored only as a salted Argon2id hash in the state volume (`admin.json`, mode 600), so the UI needs a state directory; without one nobody can log in. It is separate from the `ADMIN_TOKEN` in `.env`, which is the Bearer credential of the `zaks-drive` command and of scripts (the UI does not accept it as a password). Because `admin` / `admin` is public knowledge, **choose the password as soon as the server starts**, keep the admin port on `127.0.0.1`, and watch for the `admin-password` warning in `zaks-drive doctor`. If you do not want the page at all, set `server.adminUI: false`.
 
 ## What it does
 
@@ -41,9 +49,11 @@ Changes take effect through **Apply and restart**: the server refuses new reques
 
 | Concern | Control |
 |---|---|
-| Login | the admin token is compared in constant time and exchanged once for a random session; it is never stored in the browser |
+| Password | Argon2id (19 MiB, 2 passes) with a random salt, stored in a mode-600 file; at most two hash computations at a time; minimum 12 characters, no composition rules, obvious choices (`admin`, `password1234`, a repeated character, the old password) refused; verified in constant time with the same work for a wrong user name |
+| Default password | `admin` / `admin` opens a session that may **only** change the password (every other call answers `ADMIN_PASSWORD_CHANGE_REQUIRED`); after the change all other sessions end and a fresh one starts; a corrupt `admin.json` locks the login instead of falling back to the default |
+| Reset | needs write access to the state volume (the host); `NO_ADMIN` is removed by the server once a password is set, and a leftover file older than the last change is ignored |
 | Session | cookie `HttpOnly`, `SameSite=Strict`, scoped to `/admin`, `Secure` when served over TLS; 30 minutes idle, 8 hours at most; held in memory (a restart ends it); at most 20 at a time |
-| Guessing | after 10 wrong tokens the admin API answers `429` for a minute (login and Bearer calls share the counter); failed and successful logins are audited with the source address, never the value |
+| Guessing | after 10 wrong passwords or tokens the admin API answers `429` for a minute, and the lock **doubles with each repeated lockout** (up to 15 minutes) until a correct secret resets it; login, password change and Bearer calls share the counter; failed and successful logins and password changes are audited with the source address, never a value |
 | CSRF | every change needs the session's CSRF token in a header **and** an `Origin` that names this server; a login or logout from another origin is refused |
 | XSS, clickjacking | strict `Content-Security-Policy` (`default-src 'none'`, scripts, styles and requests only to the page's own origin, no inline code, no framing); the script builds the page with DOM calls and never parses markup; a test fails if the assets use a markup-parsing API or reference another site |
 | Secrets | the client secret is a write-only field of a password type; it is cleared after submit, stored as its own mode-600 file, and never returned by any endpoint or written to the log view, the audit log or the settings view (tests inject synthetic secrets to prove it) |
@@ -67,7 +77,7 @@ All under `/admin/api/v1/`, JSON, `Authorization: Bearer <ADMIN_TOKEN>` (or the 
 | `POST apply`, `POST apply/cancel` | drain and restart; cancel during the drain |
 | `GET certificates`, `POST certificates/activate`, `POST certificates/deactivate` | SAP certificates (the older `/admin/contentserver/certificates` endpoints keep working) |
 | `GET diagnostics`, `GET logs?tail=&level=&requestId=`, `GET audit?lines=`, `GET settings` | the read-only views |
-| `GET/POST/DELETE session` | the browser session (login, probe, logout) |
+| `GET/POST/DELETE session`, `POST session/password` | the browser session (login with user name and password, probe, logout) and the password change (needs the session, the CSRF token and the current password) |
 
 ## Testing the page yourself
 

@@ -107,35 +107,35 @@ func TestSessionLifetimeAndRevocation(t *testing.T) {
 	s := NewSessions()
 	now := time.Now()
 	s.now = func() time.Time { return now }
-	id, csrf := s.Create()
+	id, csrf := s.Create(false)
 	if id == "" || csrf == "" || id == csrf || len(id) < 40 {
 		t.Fatalf("weak identifiers: %q %q", id, csrf)
 	}
-	if got, ok := s.Lookup(id); !ok || got != csrf {
+	if got, _, ok := s.Lookup(id); !ok || got != csrf {
 		t.Fatal("a new session must be valid")
 	}
-	if _, ok := s.Lookup("guess"); ok {
+	if _, _, ok := s.Lookup("guess"); ok {
 		t.Fatal("an unknown ID was accepted")
 	}
 	now = now.Add(s.Idle - time.Minute)
-	if _, ok := s.Lookup(id); !ok {
+	if _, _, ok := s.Lookup(id); !ok {
 		t.Fatal("activity must extend the idle time")
 	}
 	now = now.Add(s.Idle + time.Minute)
-	if _, ok := s.Lookup(id); ok {
+	if _, _, ok := s.Lookup(id); ok {
 		t.Fatal("an idle session must expire")
 	}
-	id2, _ := s.Create()
+	id2, _ := s.Create(false)
 	for i := 0; i < 20; i++ { // keep it active; the absolute limit still applies
 		now = now.Add(s.Idle - time.Minute)
 		s.Lookup(id2)
 	}
-	if _, ok := s.Lookup(id2); ok {
+	if _, _, ok := s.Lookup(id2); ok {
 		t.Fatal("a session must not outlive its absolute lifetime")
 	}
-	id3, _ := s.Create()
+	id3, _ := s.Create(false)
 	s.Delete(id3)
-	if _, ok := s.Lookup(id3); ok {
+	if _, _, ok := s.Lookup(id3); ok {
 		t.Fatal("a logged-out session is still valid")
 	}
 }
@@ -144,7 +144,7 @@ func TestSessionStoreIsBounded(t *testing.T) {
 	s := NewSessions()
 	var first string
 	for i := 0; i < maxSessions+10; i++ {
-		id, _ := s.Create()
+		id, _ := s.Create(false)
 		if i == 0 {
 			first = id
 		}
@@ -152,7 +152,7 @@ func TestSessionStoreIsBounded(t *testing.T) {
 	if len(s.m) > maxSessions {
 		t.Fatalf("%d sessions kept", len(s.m))
 	}
-	if _, ok := s.Lookup(first); ok {
+	if _, _, ok := s.Lookup(first); ok {
 		t.Fatal("the oldest session should have been dropped")
 	}
 }
@@ -243,3 +243,25 @@ func TestRingBoundsFieldLength(t *testing.T) {
 type writerFunc func([]byte)
 
 func (f writerFunc) Write(p []byte) (int, error) { f(p); return len(p), nil }
+
+func TestMustChangeSessionsAndReplaceAll(t *testing.T) {
+	s := NewSessions()
+	idA, _ := s.Create(true)
+	idB, _ := s.Create(false)
+	if _, must, ok := s.Lookup(idA); !ok || !must {
+		t.Fatal("a session opened with the default password must carry the restriction")
+	}
+	if _, must, _ := s.Lookup(idB); must {
+		t.Fatal("an ordinary session has no restriction")
+	}
+	newID, newCSRF := s.ReplaceAll(false)
+	if _, _, ok := s.Lookup(idA); ok {
+		t.Fatal("a password change must end the other sessions")
+	}
+	if _, _, ok := s.Lookup(idB); ok {
+		t.Fatal("a password change must end the other sessions")
+	}
+	if got, must, ok := s.Lookup(newID); !ok || must || got != newCSRF {
+		t.Fatal("the fresh session works")
+	}
+}

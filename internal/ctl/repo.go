@@ -51,7 +51,9 @@ type repoStatus struct {
 	InFlight       int       `json:"inFlight"`
 	DrainSeconds   int       `json:"drainSeconds"`
 	StartedAt      time.Time `json:"startedAt"`
-	Serving        []string  `json:"serving"`
+	// AdminPasswordDefault is true while the admin UI still accepts admin/admin.
+	AdminPasswordDefault bool     `json:"adminPasswordDefault"`
+	Serving              []string `json:"serving"`
 }
 
 type repoBody struct {
@@ -165,9 +167,11 @@ type repoOp struct {
 	extra      []string
 }
 
-// apiOnly is true for the operations that must never run through the admin
-// API: a purge exists only on the host.
-func (o repoOp) oneOffOnly() bool { return o.name == "purge-plan" || o.name == "purge" }
+// oneOffOnly is true for the operations that must never run through the admin
+// API: a purge and an admin password reset exist only on the host.
+func (o repoOp) oneOffOnly() bool {
+	return o.name == "purge-plan" || o.name == "purge" || o.name == "admin-reset"
+}
 
 // call runs an operation through the best transport and returns the result JSON.
 func (c *repoClient) call(ctx context.Context, op repoOp) ([]byte, error) {

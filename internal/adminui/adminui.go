@@ -92,8 +92,11 @@ type Sessions struct {
 }
 
 type session struct {
-	csrf          string
-	seq           uint64 // creation order, for evicting the oldest
+	csrf string
+	seq  uint64 // creation order, for evicting the oldest
+	// mustChange marks a session opened with the default or reset password: it may
+	// only change the password.
+	mustChange    bool
 	created, last time.Time
 }
 
@@ -111,7 +114,7 @@ func token() string {
 }
 
 // Create starts a session and returns its ID (the cookie value) and CSRF token.
-func (s *Sessions) Create() (id, csrf string) {
+func (s *Sessions) Create(mustChange bool) (id, csrf string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -131,7 +134,7 @@ func (s *Sessions) Create() (id, csrf string) {
 	}
 	id, csrf = token(), token()
 	s.seq++
-	s.m[id] = &session{csrf: csrf, seq: s.seq, created: now, last: now}
+	s.m[id] = &session{csrf: csrf, seq: s.seq, created: now, last: now, mustChange: mustChange}
 	return id, csrf
 }
 
@@ -140,23 +143,23 @@ func (s *Sessions) expired(v *session, now time.Time) bool {
 }
 
 // Lookup returns the CSRF token of a valid session and extends its idle time.
-func (s *Sessions) Lookup(id string) (csrf string, ok bool) {
+func (s *Sessions) Lookup(id string) (csrf string, mustChange, ok bool) {
 	if id == "" {
-		return "", false
+		return "", false, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.m[id]
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	now := s.now()
 	if s.expired(v, now) {
 		delete(s.m, id)
-		return "", false
+		return "", false, false
 	}
 	v.last = now
-	return v.csrf, true
+	return v.csrf, v.mustChange, true
 }
 
 // Delete ends a session.
@@ -189,4 +192,13 @@ func SameOrigin(r *http.Request) bool {
 func CSRFMatches(r *http.Request, csrf string) bool {
 	got := r.Header.Get("X-CSRF-Token")
 	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(csrf)) == 1
+}
+
+// ReplaceAll ends every session and starts one new one: used after a password
+// change, so a session that an attacker may hold does not survive it.
+func (s *Sessions) ReplaceAll(mustChange bool) (id, csrf string) {
+	s.mu.Lock()
+	s.m = map[string]*session{}
+	s.mu.Unlock()
+	return s.Create(mustChange)
 }

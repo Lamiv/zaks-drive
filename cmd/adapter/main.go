@@ -176,6 +176,7 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 	var restarting atomic.Bool // set when the server ends to apply repository changes
 	mgr := &repoadmin.Manager{StateDir: cfg.Server.StateDir, Actor: "api", Load: func() (config.Config, error) { return config.Load(cfgPath) }}
 	applied, _ := mgr.Fingerprint()
+	account := openAdminAccount(cfg, mgr, log)
 	if cfg.Fallback != "" {
 		log.Error("the repository definitions in the state directory are not valid; serving the last working state", "problem", safelog.OneLine(safelog.Redact(cfg.Fallback)))
 	} else if cfg.Server.StateDir != "" {
@@ -228,7 +229,7 @@ func run(cfg config.Config, cfgPath string, log *slog.Logger) error {
 			return ids
 		},
 		stop:     func() { restarting.Store(true); stop() },
-		sessions: sessions, ring: logRing, diagnose: ui.diagnose, settings: ui.settings,
+		sessions: sessions, account: account, ring: logRing, diagnose: ui.diagnose, settings: ui.settings,
 		certs: func() *contentrepo.Server { return csRef.Load() },
 		check: func(ctx context.Context, id string) (string, bool, error) {
 			current, _ := config.Load(cfgPath) // a half-valid state still lets one repository be tested

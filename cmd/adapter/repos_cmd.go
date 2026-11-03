@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Lamiv/zaks-drive/internal/adminui"
 	"github.com/Lamiv/zaks-drive/internal/apperr"
 	"github.com/Lamiv/zaks-drive/internal/auth"
 	"github.com/Lamiv/zaks-drive/internal/config"
@@ -34,6 +35,7 @@ import (
 //	repos update <id>        (stdin: same shape)
 //	repos detach <id> [--allow-in-use]
 //	repos check <id>
+//	repos admin-reset        (create NO_ADMIN: reset the admin UI password at the next start)
 //	repos detached
 //	repos purge-plan <id>    (local, detached repositories only)
 //	repos purge <id> --typed-id ID --challenge PHRASE --i-understand-this-destroys-documents
@@ -101,6 +103,15 @@ func reposCLI(cfgPath string, args []string) int {
 			return out(nil, err)
 		}
 		return out(map[string]any{"detached": id, "documentsDeleted": false}, nil)
+	case "admin-reset":
+		// Creates NO_ADMIN in the state directory; the next start of the server resets the
+		// admin password to admin/admin (to be changed at the first login) and deletes the file
+		// once a new password is set.
+		if err := adminui.RequestReset(cfg.Server.StateDir); err != nil {
+			return out(nil, apperr.New(apperr.AdminStateUnavailable, "cannot create NO_ADMIN: %v", err).Wrap(err))
+		}
+		mgr.Audit("admin-reset-requested", "-", "NO_ADMIN created")
+		return out(map[string]any{"requested": true}, nil)
 	case "detached":
 		specs, err := mgr.Detached()
 		return out(map[string]any{"value": specs}, err)

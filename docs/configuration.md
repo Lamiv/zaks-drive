@@ -46,7 +46,7 @@ Other variables that override `config.yaml` (all optional): `ADAPTER_INTERFACES`
 | `adminToken` | empty | Bearer token for the admin API (repositories, certificates, the [admin UI](ui.md)). Normally `${ADMIN_TOKEN}`. Repository administration and the UI refuse to work while it is empty |
 | `stateDir` | empty | Folder for managed repositories: definitions, their secrets and local documents. The supplied Compose files set `STATE_DIR=/var/lib/zaks-drive` (the `state` volume). Without it, `zaks-drive repo` and local repositories are unavailable |
 | `drainTimeout` | `30s` | How long a restart for a repository change waits for running requests (new ones get `503` with `Retry-After`) |
-| `adminUI` | `true` | Serve the [admin UI](ui.md) on the admin listener. It still needs `ADMIN_TOKEN` to log in |
+| `adminUI` | `true` | Serve the [admin UI](ui.md) on the admin listener. Login is the user `admin` with a password chosen at the first login ([guide](ui.md#logging-in)); it needs `server.stateDir` to store it |
 | `enablePprof` | `false` | Go profiling endpoints on the admin listener. Keep off in production |
 
 ### `graph`

@@ -1,9 +1,9 @@
 // Browser smoke test of the admin UI (docs/ui.md). Drives a headless Chromium-based browser over the
-// DevTools protocol with Node 22+ only (no packages). It logs in (a wrong token first), adds a local
+// DevTools protocol with Node 22+ only (no packages). It logs in (a wrong password first, then admin/admin and the forced new-password screen), adds a local
 // repository through the real form, tests access, visits every view, edits, detaches and logs out, and
 // fails on console errors, CSP violations, exceptions or any request to another origin.
 //
-//   ZD_TOKEN=<ADMIN_TOKEN> [ZD_BASE=http://127.0.0.1:9090] [ZD_BROWSER=/path/to/chrome|msedge] node scripts/ui-smoke.mjs [outdir]
+//   [ZD_PASSWORD=<password to choose>] [ZD_BASE=http://127.0.0.1:9090] [ZD_BROWSER=/path/to/chrome|msedge] node scripts/ui-smoke.mjs [outdir]
 //
 // Run it against a disposable server: it creates and detaches a repository "AD" and expects no repository
 // with that ID to exist. It never restarts the server.
@@ -13,8 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const BASE = process.env.ZD_BASE || "http://127.0.0.1:9090";
-const TOKEN = process.env.ZD_TOKEN;
-if (!TOKEN) { console.error("set ZD_TOKEN to the server's ADMIN_TOKEN"); process.exit(2); }
+const PASSWORD = process.env.ZD_PASSWORD || "smoke-test-passphrase-1"; // the password the run chooses (or logs in with if one is already set)
 const OUT = process.argv[2] || ".";
 const edge = process.env.ZD_BROWSER || (process.platform === "win32" ? "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" : "google-chrome");
 const profile = mkdtempSync(join(tmpdir(), "zd-edge-"));
@@ -41,18 +40,32 @@ try {
   await waitFor("!!document.querySelector('form.login')", "login form");
   ok("login form shown before any data", await ev("!document.querySelector('nav') || document.getElementById('nav').hidden"));
   ok("page title", (await ev("document.title")) === "ZAKS Drive admin");
-
-  // wrong token
-  await ev("document.getElementById('tok').value='wrong-token'; document.querySelector('form.login').requestSubmit()");
+  // wrong password
+  await ev("document.getElementById('user').value='admin'; document.getElementById('pass').value='wrong-password'; document.querySelector('form.login').requestSubmit()");
   await waitFor("!!document.querySelector('.err')", "login error");
-  ok("wrong token shows a coded error", (await ev("document.querySelector('.err').textContent")).includes("AUTH_ADMIN_UNAUTHORIZED"));
-  ok("token field is cleared after a failed login", (await ev("document.getElementById('tok').value")) === "");
+  ok("wrong password shows a coded error", (await ev("document.querySelector('.err').textContent")).includes("AUTH_ADMIN_UNAUTHORIZED"));
+  ok("password field is cleared after a failed login", (await ev("document.getElementById('pass').value")) === "");
 
-  // right token
-  await ev(`document.getElementById('tok').value=${JSON.stringify(TOKEN)}; document.querySelector('form.login').requestSubmit()`);
-  await waitFor("document.querySelectorAll('#nav button').length === 7", "navigation");
-  ok("seven views in the navigation", true);
-  ok("token is not left in the page", !(await ev("document.documentElement.outerHTML")).includes(TOKEN));
+  // first login with the default pair must lead to the forced password change (a re-run on a
+  // server whose password is already set logs in with ZD_PASSWORD instead)
+  await ev("document.getElementById('pass').value='admin'; document.querySelector('form.login').requestSubmit()");
+  await waitFor("!!document.getElementById('newpw') || !!document.querySelector('.err')", "forced change or error");
+  if (await ev("!!document.getElementById('newpw')")) {
+    ok("admin/admin leads to the choose-a-password screen", (await ev("document.body.innerText")).includes("Choose a new password"));
+    ok("nothing else is reachable before the change", await ev("document.getElementById('nav').hidden"));
+    await ev(`document.getElementById('newpw').value='aaaaaaaaaaaaaaaa'; document.getElementById('newpw2').value='bbbbbbbbbbbbbbbb'; document.querySelector('form.login').requestSubmit()`);
+    await waitFor("document.body.innerText.includes('not the same')", "mismatch message");
+    ok("mismatching repeats are refused", true);
+    await ev(`document.getElementById('newpw').value='administrator'; document.getElementById('newpw2').value='administrator'; document.querySelector('form.login').requestSubmit()`);
+    await waitFor("document.body.innerText.includes('ADMIN_PASSWORD_REJECTED')", "weak password refused by the server");
+    ok("a weak password is refused by the server", true);
+    await ev(`document.getElementById('newpw').value=${JSON.stringify(PASSWORD)}; document.getElementById('newpw2').value=${JSON.stringify(PASSWORD)}; document.querySelector('form.login').requestSubmit()`);
+  } else {
+    await ev(`document.getElementById('pass').value=${JSON.stringify(PASSWORD)}; document.querySelector('form.login').requestSubmit()`);
+  }
+  await waitFor("document.querySelectorAll('#nav button').length === 8", "navigation");
+  ok("eight views in the navigation", true);
+  ok("password is not left in the page", !(await ev("document.documentElement.outerHTML")).includes(PASSWORD));
   ok("document.cookie cannot see the session (HttpOnly)", (await ev("document.cookie")) === "");
   await waitFor("document.body.innerText.includes('Overview') && document.body.innerText.includes('Version')", "overview");
 
@@ -84,12 +97,12 @@ try {
   ok("access test passed for the local repository", (await ev("document.querySelector('#result pre').textContent")).includes("[PASS] [AD] Write"));
 
   // every view renders
-  for (const [name, needle] of [["Overview", "Version"], ["SAP certificates", "No certificate received"], ["Diagnostics", "Repository definitions"], ["Logs", "Refresh"], ["Audit", "add"], ["Settings", "interfaces"]]) {
+  for (const [name, needle] of [["Overview", "Version"], ["SAP certificates", "No certificate received"], ["Diagnostics", "Repository definitions"], ["Logs", "Refresh"], ["Audit", "add"], ["Settings", "interfaces"], ["Account", "Forgot the password"]]) {
     await ev(`[...document.querySelectorAll('#nav button')].find(b=>b.textContent===${JSON.stringify(name)}).click()`);
     await waitFor(`document.getElementById('view').innerText.includes(${JSON.stringify(needle)})`, name + " view");
     ok("view " + name, true);
     if (name === "Logs") ok("logs view shows server lines", (await ev("document.querySelector('#view pre').textContent")).length > 5);
-    if (name === "Settings") ok("settings hide secrets", !(await ev("document.getElementById('view').innerText")).includes(TOKEN));
+    if (name === "Settings") ok("settings hide secrets", !(await ev("document.getElementById('view').innerText")).includes(PASSWORD));
   }
 
   // edit then detach
@@ -113,11 +126,11 @@ try {
 } catch (e) { console.log("ERROR", e.message); results.push({ name: "run", pass: false, detail: e.message }); }
 
 const requests = events.filter((e) => e.method === "Network.requestWillBeSent").map((e) => e.params.request.url);
-const foreign = requests.filter((u) => !u.startsWith(BASE) && !u.startsWith("data:") && !u.startsWith("about:"));
+const foreign = requests.filter((u) => !u.startsWith(BASE) && !/^(data|about|edge|chrome|devtools):/.test(u)); // the browser's own internal pages are not the page under test
 ok("every request stays on the admin origin", foreign.length === 0, foreign.join(", "));
 const logs401 = events.filter((e) => e.method === "Log.entryAdded" && /status of 401/.test(e.params.entry.text));
-ok("only the two deliberate 401s (wrong token, call after logout)", logs401.length === 2, String(logs401.length));
-const bad = events.filter((e) => (e.method === "Log.entryAdded" && ["error", "warning"].includes(e.params.entry.level) && !/favicon|status of 401|status of 409/i.test(e.params.entry.text + (e.params.entry.url || ""))) || e.method === "Runtime.exceptionThrown");
+ok("only the deliberate 401s (wrong password, call after logout)", logs401.length >= 2 && logs401.length <= 3, String(logs401.length));
+const bad = events.filter((e) => (e.method === "Log.entryAdded" && ["error", "warning"].includes(e.params.entry.level) && !/favicon|status of 40[019]/i.test(e.params.entry.text + (e.params.entry.url || ""))) || e.method === "Runtime.exceptionThrown");
 ok("no console errors, CSP violations or exceptions", bad.length === 0, JSON.stringify(bad.map((b) => b.params.entry?.text || b.params.exceptionDetails?.exception?.description || b.params.exceptionDetails?.text)).slice(0, 900));
 writeFileSync(OUT + "/result.json", JSON.stringify({ results, requests: [...new Set(requests.map((u) => u.replace(BASE, "")))] }, null, 1));
 console.log(results.filter((r) => r.pass).length + " passed, " + results.filter((r) => !r.pass).length + " failed");

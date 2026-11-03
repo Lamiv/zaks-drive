@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/Lamiv/zaks-drive/internal/adminui"
 	"github.com/Lamiv/zaks-drive/internal/config"
 	"github.com/Lamiv/zaks-drive/internal/contentrepo"
 	"github.com/Lamiv/zaks-drive/internal/repoadmin"
@@ -127,4 +129,35 @@ func (u *uiState) settings() map[string]any {
 		"sapAutoActivateCertificates": c.ContentServer.AutoActivateCertificates,
 		"logLevel":                    c.Log.Level,
 	}
+}
+
+// openAdminAccount opens the admin account and applies a reset request. A
+// NO_ADMIN file in the state directory (created by `zaks-drive admin
+// reset-password` or by hand) returns the account to the default admin/admin
+// state, which the page forces to be changed at the first login; the server
+// deletes the file once a new password is set.
+func openAdminAccount(cfg config.Config, mgr *repoadmin.Manager, log *slog.Logger) *adminui.Account {
+	if !cfg.Server.AdminUI {
+		return nil
+	}
+	acc, err := adminui.OpenAccount(cfg.Server.StateDir)
+	if err != nil {
+		log.Error("cannot read the admin account", safelog.Err(err))
+	}
+	switch reset, rerr := acc.ApplyReset(); {
+	case rerr != nil:
+		log.Error("a reset of the admin password was requested (NO_ADMIN) but failed", safelog.Err(rerr))
+	case reset:
+		log.Warn("NO_ADMIN found: the admin password was reset to the default (admin/admin); a new one must be chosen at the next login, then the file is deleted")
+		mgr.Audit("admin-reset", "-", "NO_ADMIN file at start")
+	}
+	switch {
+	case !acc.Available():
+		log.Warn("the admin UI cannot be used: it needs a state directory (server.stateDir) to store the admin password")
+	case acc.Locked():
+		log.Error("admin.json is unreadable, so nobody can log in to the admin UI; reset with `zaks-drive admin reset-password` (or create NO_ADMIN in the state volume) and restart")
+	case acc.IsDefault():
+		log.Warn("the admin UI uses the default login admin/admin until the first login changes it; keep the admin port on 127.0.0.1")
+	}
+	return acc
 }

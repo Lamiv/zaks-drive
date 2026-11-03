@@ -106,6 +106,7 @@ func (a *App) commands() []command {
 		{"logs", "show sanitized logs (--follow, --tail N, --since 1h, --level, --iface)", (*App).cmdLogs},
 		{"doctor", "diagnose the installation (--json, --connectivity)", (*App).cmdDoctor},
 		{"check", "test every SharePoint access the server needs (contacts Microsoft)", (*App).cmdCheck},
+		{"admin", "admin reset-password: return the admin UI login to admin/admin (to be changed at once)", (*App).cmdAdmin},
 		{"repo", "repo list|show|add|update|remove|check|purge: manage repositories (local folder or SharePoint)", (*App).cmdRepo},
 		{"update", "update to a verified release (--check, --version, --yes)", (*App).cmdUpdate},
 		{"rollback", "return to the previously installed version", (*App).cmdRollback},

@@ -6,7 +6,14 @@
 
 // All user-visible strings live here so a translation only touches this table.
 const T = {
-  login: "Log in", token: "Admin token", tokenHint: "The ADMIN_TOKEN from the server's .env file. It is exchanged once for a short session and is not stored in this browser.",
+  login: "Log in", username: "User name", password: "Password",
+  firstLoginHint: "First time? Log in as admin with the password admin. You will be asked to choose a new password straight away.",
+  setPassword: "Choose a new password", changePassword: "Change password", currentPassword: "Current password", newPassword: "New password", repeatPassword: "Repeat the new password", savePassword: "Save password",
+  mustChange: "You logged in with the default password. Choose your own now; nothing else is available until you do.",
+  pwHint: "At least 12 characters. A few unrelated words make a good passphrase; no special characters are required. Your password manager can generate and store one.",
+  pwMismatch: "The two passwords are not the same.",
+  resetNote: "Forgot the password? On the Docker host run: zaks-drive admin reset-password. It restarts the server and the login becomes admin / admin again, to be changed at once.",
+  account: "Account",
   overview: "Overview", repositories: "Repositories", certificates: "SAP certificates", diagnostics: "Diagnostics", logs: "Logs", audit: "Audit", settings: "Settings",
   pending: "Repository changes are waiting. Applying restarts the server: new requests get 503 with Retry-After (SAP retries), running requests finish first.",
   afterRestart: "The server restarted to apply your change. Sessions end with a restart, so please log in again.",
@@ -56,9 +63,10 @@ async function api(method, path, body) {
   const text = await resp.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
-  if (resp.status === 401 && path !== "/session") { showLogin(); throw { code: "LOGIN", detail: "Please log in again." }; }
+  if (resp.status === 401 && !path.startsWith("/session")) { showLogin(); throw { code: "LOGIN", detail: "Please log in again." }; }
   if (!resp.ok) {
     const er = (data && data.error) || { code: "HTTP_" + resp.status, detail: resp.statusText };
+    if (er.code === "ADMIN_PASSWORD_CHANGE_REQUIRED") { showChangePassword(true, null); throw { code: "LOGIN", detail: er.detail }; }
     throw er;
   }
   return path.startsWith("/audit") || path.startsWith("/logs") ? text : data;
@@ -68,33 +76,78 @@ function errBox(e) {
   return el("div", { class: "err", role: "alert" }, [e.code ? e.code + ": " : "", e.detail || e.title || "failed", e.fix ? "\nFix: " + e.fix : ""]);
 }
 
-// ---- login ----
+// ---- login and password ----
 
 function showLogin(message) {
   csrf = "";
   $("nav").hidden = true; $("logout").hidden = true; $("banner").hidden = true;
-  const input = el("input", { id: "tok", type: "password", autocomplete: "off", required: true, "aria-describedby": "tokhint" });
+  const user = el("input", { id: "user", value: "admin", autocomplete: "username", required: true, maxlength: 64 });
+  const pass = el("input", { id: "pass", type: "password", autocomplete: "current-password", required: true, maxlength: 512 });
   const msg = el("div");
   const form = el("form", { class: "card login", onsubmit: async (ev) => {
     ev.preventDefault();
     msg.replaceChildren();
+    const typed = pass.value;
     try {
-      const r = await api("POST", "/session", { token: input.value });
-      input.value = "";
+      const r = await api("POST", "/session", { username: user.value, password: typed });
+      pass.value = "";
       csrf = r.csrf;
-      start();
-    } catch (e) { input.value = ""; msg.replaceChildren(errBox(e)); }
+      if (r.mustChangePassword) showChangePassword(true, typed); else start();
+    } catch (e) { pass.value = ""; msg.replaceChildren(errBox(e)); pass.focus(); }
   } },
-  el("h2", {}, T.login), el("label", { for: "tok" }, T.token), input, el("p", { class: "hint", id: "tokhint" }, T.tokenHint),
-  msg, el("p", {}, el("button", { class: "primary", type: "submit" }, T.login)));
+  el("h2", {}, T.login), el("label", { for: "user" }, T.username), user, el("label", { for: "pass" }, T.password), pass,
+  msg, el("p", {}, el("button", { class: "primary", type: "submit" }, T.login)),
+  el("p", { class: "hint" }, T.firstLoginHint));
   if (message) msg.append(el("div", { class: "err" }, message));
   $("view").replaceChildren(form);
-  input.focus();
+  (message || user.value ? pass : user).focus();
+}
+
+// passwordForm builds the form that sets a new password. When the current
+// password is known (the first login just typed it) it is not asked again.
+function passwordForm(known, onDone, forced) {
+  const cur = el("input", { id: "curpw", type: "password", autocomplete: "current-password", required: true, maxlength: 512 });
+  const nw = el("input", { id: "newpw", type: "password", autocomplete: "new-password", required: true, minlength: 12, maxlength: 128, "aria-describedby": "pwhint" });
+  const again = el("input", { id: "newpw2", type: "password", autocomplete: "new-password", required: true, maxlength: 128 });
+  const msg = el("div");
+  const form = el("form", { class: "card login", onsubmit: async (ev) => {
+    ev.preventDefault();
+    msg.replaceChildren();
+    if (nw.value !== again.value) { msg.append(el("div", { class: "err", role: "alert" }, T.pwMismatch)); return; }
+    const body = { current: known !== null ? known : cur.value, new: nw.value };
+    try {
+      const r = await api("POST", "/session/password", body);
+      cur.value = nw.value = again.value = "";
+      csrf = r.csrf;
+      onDone();
+    } catch (e) { nw.value = again.value = ""; msg.replaceChildren(errBox(e)); nw.focus(); }
+  } },
+  el("h2", {}, forced ? T.setPassword : T.changePassword),
+  forced ? el("p", {}, T.mustChange) : null,
+  known === null ? [el("label", { for: "curpw" }, T.currentPassword), cur] : null,
+  el("label", { for: "newpw" }, T.newPassword), nw, el("p", { class: "hint", id: "pwhint" }, T.pwHint),
+  el("label", { for: "newpw2" }, T.repeatPassword), again,
+  msg, el("p", {}, el("button", { class: "primary", type: "submit" }, T.savePassword)));
+  return form;
+}
+
+// showChangePassword is the screen of the first login (forced) and after a
+// reset: nothing else is reachable until a new password has been chosen.
+function showChangePassword(forced, known) {
+  $("nav").hidden = true; $("banner").hidden = true; $("logout").hidden = false;
+  const form = passwordForm(known === undefined ? null : known, () => start(), forced);
+  $("view").replaceChildren(form);
+  form.querySelector(forced && known ? "#newpw" : "input").focus();
+}
+
+async function viewAccount() {
+  return el("div", {}, passwordForm(null, () => show("account"), false),
+    el("p", { class: "hint" }, T.resetNote));
 }
 
 // ---- shell ----
 
-const VIEWS = { overview: viewOverview, repositories: viewRepositories, certificates: viewCertificates, diagnostics: viewDiagnostics, logs: viewLogs, audit: viewAudit, settings: viewSettings };
+const VIEWS = { overview: viewOverview, repositories: viewRepositories, certificates: viewCertificates, diagnostics: viewDiagnostics, logs: viewLogs, audit: viewAudit, settings: viewSettings, account: viewAccount };
 
 async function start() {
   $("nav").hidden = false; $("logout").hidden = false;
@@ -346,7 +399,7 @@ $("logout").addEventListener("click", async () => { try { await api("DELETE", "/
 (async function boot() {
   try {
     const s = await api("GET", "/session");
-    if (s && s.authenticated) { csrf = s.csrf; start(); return; }
+    if (s && s.authenticated) { csrf = s.csrf; if (s.mustChangePassword) showChangePassword(true, null); else start(); return; }
   } catch (e) { /* fall through to the login form */ }
   showLogin();
 })();

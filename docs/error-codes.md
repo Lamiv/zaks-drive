@@ -855,6 +855,9 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`ADMIN_REPO_IN_USE`](#admin_repo_in_use) | 409 | Repository is exposed to SAP |
 | [`ADMIN_REPO_INVALID`](#admin_repo_invalid) | 400 | Repository settings rejected |
 | [`ADMIN_CSRF_INVALID`](#admin_csrf_invalid) | 403 | Request not accepted from this page |
+| [`ADMIN_PASSWORD_CHANGE_REQUIRED`](#admin_password_change_required) | 403 | Set a new admin password first |
+| [`ADMIN_PASSWORD_REJECTED`](#admin_password_rejected) | 400 | The new password is not accepted |
+| [`ADMIN_ACCOUNT_LOCKED`](#admin_account_locked) | 423 | The admin account record is unreadable |
 | [`ADMIN_APPLY_BUSY`](#admin_apply_busy) | 409 | A restart is already in progress |
 | [`ADMIN_PURGE_UNSUPPORTED`](#admin_purge_unsupported) | 409 | Only detached local repositories can be purged |
 | [`ADMIN_PURGE_ATTACHED`](#admin_purge_attached) | 409 | The repository is still in use |
@@ -931,6 +934,27 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** A change made with a browser session must come from the admin page itself: it needs the session's CSRF token and an Origin that names this server.
 - **Fix:** Reload the admin page and try again. Scripts should use the Bearer ADMIN_TOKEN instead of a cookie.
+
+### `ADMIN_PASSWORD_CHANGE_REQUIRED`
+
+**Set a new admin password first** (HTTP 403)
+
+- **Cause:** The session was opened with the default (or reset) password admin/admin, which may only be used to choose a new password.
+- **Fix:** Choose a new password in the admin page (at least 12 characters), then continue.
+
+### `ADMIN_PASSWORD_REJECTED`
+
+**The new password is not accepted** (HTTP 400)
+
+- **Cause:** The new password is too short (minimum 12 characters), too easy to guess, the same as the current one, or contains characters that are not allowed.
+- **Fix:** Use a longer password; a few unrelated words make a good passphrase.
+
+### `ADMIN_ACCOUNT_LOCKED`
+
+**The admin account record is unreadable** (HTTP 423)
+
+- **Cause:** admin.json in the state directory exists but cannot be read, so nobody can log in (the server never falls back to the default password).
+- **Fix:** Reset the account: `zaks-drive admin reset-password`, or create an empty file named NO_ADMIN in the state volume and restart the server.
 
 ### `ADMIN_APPLY_BUSY`
 

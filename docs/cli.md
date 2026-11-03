@@ -199,6 +199,7 @@ Exit code 0 when nothing FAILED (1 otherwise; `--strict` also fails on warnings)
 | `config-valid` | loads `config.yaml` with the server's own loader, `.env` only as environment; contacts nothing | the loader reports errors (codes in [error codes](error-codes.md)) | |
 | `api-keys` | length of API keys and admin token in `.env`; whether REST authentication is disabled | | a key under 32 characters, or authentication disabled |
 | `repositories` | asks the server's admin API (`ADMIN_TOKEN` from `.env`, localhost only): changes waiting for a restart, fallback to the last working state, repositories defined but not served | the server fell back to the last working repository state | changes pending a restart, or a repository not served |
+| `admin-password` | asks the server's admin API whether the admin web page still accepts the default login `admin` / `admin` | | the default password is still active |
 | `repository-mapping` | every SAP content repository maps to a repository; risky settings | a mapping points nowhere | signature `none`, or no `allowedNetworks` with the SAP interface enabled |
 | `container-state` | `docker compose ps` for this deployment, restart counts via `docker inspect` of those IDs | stopped, unhealthy, or 3 or more restarts | not started, 1 or 2 restarts, health still starting |
 | `container-resources` | OOM-kill flag and memory limit of the running container | killed for exceeding its memory limit | no memory limit |
@@ -270,6 +271,22 @@ The documents are files in a folder of the state volume. Good to know:
 - The repository must already be detached and the server restarted without it; the command refuses while the server still serves it or changes are pending.
 - `repo purge <id> --plan` counts what would be deleted and prints a **challenge phrase** valid for 15 minutes and bound to exactly that state of the folder. `repo purge <id> --execute --i-understand-this-destroys-documents` then asks you to type the repository ID and the phrase (without a terminal: `--typed-id` and `--challenge`). If anything in the folder changed since the plan, or the phrase expired, it is refused.
 - Deletion stays inside the repository's own folder and removes links without following them. Plan and purge are written to the audit log. There is no `--yes`, no environment variable and no setting that skips these steps.
+
+## Admin UI password
+
+The [admin UI](ui.md) is on by default. Its login is the user **`admin`** with a password **you choose at the first login**: until then the page accepts `admin` / `admin`, but only to set a new password (nothing else is reachable with it). The password is stored only as a salted Argon2id hash in the state volume (`admin.json`, mode 600). It is separate from the `ADMIN_TOKEN` in `.env`, which this command and your scripts keep using.
+
+`zaks-drive doctor` warns (`admin-password`) while the default is still active. Choose the password soon after the first start, and keep the admin port on `127.0.0.1`.
+
+**Forgot it?** On the Docker host:
+
+```bash
+zaks-drive admin reset-password        # asks first; --yes for scripts, --no-restart to only record the request
+```
+
+This creates an empty file `NO_ADMIN` in the state volume (through a one-off container, like `repo`) and restarts the server through its drain. After the restart the login is `admin` / `admin` again, to be changed at once, and **the server deletes `NO_ADMIN` as soon as the new password is set**. You can do the same by hand: create an empty file named `NO_ADMIN` in the root of the state volume and restart the server. A `NO_ADMIN` file left over from earlier (older than the last password change) is ignored and removed, so it can never reset a password twice. If `admin.json` is ever unreadable, nobody can log in (the server never falls back to `admin` / `admin`) until a reset.
+
+Reset needs shell access to the Docker host, the same trust level that already reaches every secret in the volume; it cannot be done from the browser.
 
 ## SAP troubleshooting
 
@@ -442,6 +459,7 @@ Also: delete or rotate the client secret in Microsoft Entra, and remove the repo
 | `logs` | sanitized logs (`--follow`, `--tail`, `--since`, `--level`, `--iface`, `--request-id`, `--output`) |
 | `doctor` | diagnostics (`--json`, `--connectivity`, `--strict`, `--list`) |
 | `check` | the server's SharePoint access checklist (contacts Microsoft) |
+| `admin` | `reset-password`: return the admin UI login to `admin` / `admin` ([details](#admin-ui-password)) |
 | `repo` | `list`, `show`, `add`, `update`, `remove`, `check`, `purge`: manage repositories ([details](#repositories-several-storage-locations)) |
 | `update`, `rollback` | verified updates with automatic rollback |
 | `support bundle` | sanitized diagnostics archive |
