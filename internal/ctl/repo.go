@@ -671,6 +671,10 @@ func (a *App) repoAddUpdate(ctx context.Context, args []string, create bool) int
 			return a.fail(ExitFail, fmt.Sprintf("repository %s is defined in config.yaml and cannot be changed with this command", id), "edit config.yaml and run: zaks-drive restart")
 		}
 		spec, current = v.Spec, &v
+		if set["backend"] && f.backend != v.Backend {
+			return a.fail(ExitUsage, fmt.Sprintf("the backend of repository %s is %s and cannot be changed: documents are not moved between a local folder and SharePoint", id, v.Backend),
+				"detach it (zaks-drive repo remove) and add a new repository with the other backend")
+		}
 	}
 	if msg := applyRepoFlags(&spec, &f, set, create); msg != "" {
 		return a.fail(ExitUsage, msg, "see: zaks-drive repo help")

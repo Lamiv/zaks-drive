@@ -408,3 +408,30 @@ func TestAuditLogHasOneLinePerChangeAndNoSecrets(t *testing.T) {
 		t.Fatalf("AuditLog(1): %s", last)
 	}
 }
+
+func TestTheBackendIsChosenOnceAndCannotBeSwitched(t *testing.T) {
+	m, state := newManager(t)
+	if _, err := m.Add(local("AD", "AD"), ""); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(state, "repos.d", "AD.yaml"))
+	sp := Spec{ID: "AD", Backend: config.BackendSharePoint, SiteURL: "https://contoso.sharepoint.com/sites/x"}
+	if _, err := m.Update(sp, nil); code(err) != "ADMIN_REPO_INVALID" || !strings.Contains(err.Error(), "cannot be changed") {
+		t.Fatalf("switching local to SharePoint must be refused: %v", err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(state, "repos.d", "AD.yaml")); string(after) != string(before) {
+		t.Fatal("a refused switch changed the file")
+	}
+	// the other direction, and an unspecified backend (which means SharePoint), are refused too
+	if _, err := m.Add(Spec{ID: "ZH", Backend: config.BackendSharePoint, SiteURL: "https://contoso.sharepoint.com/sites/hr"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Update(local("ZH", "ZH"), nil); code(err) != "ADMIN_REPO_INVALID" {
+		t.Fatalf("switching SharePoint to local must be refused: %v", err)
+	}
+	// ordinary updates of the same backend still work
+	three := 3
+	if _, err := m.Update(Spec{ID: "AD", Backend: config.BackendLocal, Local: &LocalSpec{Path: "AD", Versions: &three}}, nil); err != nil {
+		t.Fatalf("an update that keeps the backend: %v", err)
+	}
+}

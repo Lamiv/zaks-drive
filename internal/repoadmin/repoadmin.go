@@ -314,6 +314,19 @@ func (m *Manager) write(spec Spec, secret *string, create bool) (View, error) {
 	case !create && prevYAML == nil:
 		return View{}, m.notManaged(spec.ID)
 	}
+	if !create {
+		// The storage type is chosen once, when the repository is created. Changing it would point the
+		// repository at an empty store while its documents stay where they are, so it is refused here
+		// (the command, the API and the page all come through this check).
+		var prev Spec
+		if err := yaml.Unmarshal(prevYAML, &prev); err == nil {
+			old := firstNonEmpty(prev.Backend, config.BackendSharePoint)
+			if firstNonEmpty(spec.Backend, config.BackendSharePoint) != old {
+				return View{}, apperr.New(apperr.AdminRepoInvalid,
+					"the backend of repository %q is %s and cannot be changed: documents are not moved between a local folder and SharePoint. Detach it and add a new repository with the other backend, then copy the documents with the REST API", spec.ID, old)
+			}
+		}
+	}
 	if create {
 		// the ID may also belong to config.yaml
 		if cfg, _ := m.Load(); hasID(cfg, spec.ID) {

@@ -614,3 +614,18 @@ func TestDoctorWarnsWhileTheDefaultAdminPasswordIsActive(t *testing.T) {
 	f, _ = e.doctor(t)
 	wantStatus(t, f, "admin-password", StatusPass)
 }
+
+func TestRepoUpdateRefusesToSwitchTheBackend(t *testing.T) {
+	e, fs := newRepoEnv(t)
+	fs.repos["AD"] = repoadmin.View{Spec: repoadmin.Spec{ID: "AD", Backend: "local", Local: &repoadmin.LocalSpec{Path: "AD"}}, Source: "managed"}
+	if rc := e.main("repo", "update", "AD", "--backend", "sharepoint", "--site-url", "https://x", "--yes", "--dir", e.dir); rc != ExitUsage || !strings.Contains(e.err.String(), "cannot be changed") {
+		t.Fatalf("%d\n%s", rc, e.both())
+	}
+	if len(fs.bodies) != 0 || fs.repos["AD"].Backend != "local" {
+		t.Fatal("a refused switch reached the server")
+	}
+	// naming the backend it already has is harmless
+	if rc := e.main("repo", "update", "AD", "--backend", "local", "--versions", "4", "--yes", "--no-restart", "--dir", e.dir); rc != ExitOK {
+		t.Fatalf("%d\n%s", rc, e.both())
+	}
+}

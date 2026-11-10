@@ -128,7 +128,7 @@ Options of `repo add` and `repo update` (`--global-app` and `--no-sap` exist for
 | Flag | Meaning |
 |---|---|
 | `--dir DIR` | deployment directory |
-| `--backend B` | `local` or `sharepoint` (required for `add`) |
+| `--backend B` | `local` or `sharepoint`; required for `add`. **Chosen once**: `update` refuses to change it, because documents are not moved between the two |
 | `--description TEXT` | free text |
 | `--read-only` | refuse writes |
 | `--path FOLDER` | local: folder below the data directory (default: the ID) |

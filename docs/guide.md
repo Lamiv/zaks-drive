@@ -40,7 +40,7 @@ flowchart LR
 ```
 
 - A **repository** is a named place for documents. Its ID is also the SAP content repository ID in OAC0 when you expose it to SAP.
-- A repository stores its documents in **SharePoint/OneDrive** (through Microsoft Graph, with the global Entra application or its own) or in a **local folder** of the server.
+- A repository stores its documents in **SharePoint/OneDrive** (through Microsoft Graph, with the global Entra application or its own) or in a **local folder** of the server. These are the two storage types; **each repository gets exactly one, chosen when it is created, and it cannot be switched later** (documents are not moved between them: to change, add a new repository and copy the documents with the REST API). Several repositories can use different types side by side, and each can be reached by REST applications and, if you expose it, by SAP.
 - **Static** repositories are written in `config.yaml` (the first one is created by `setup`). **Managed** repositories are created with `zaks-drive repo` or the admin page; their definitions, secrets and local documents live in the **state volume**.
 - Two programs: **`zaks-drive`** runs on the host and manages the deployment; **`zaks-drive-server`** runs in the container and serves traffic.
 
