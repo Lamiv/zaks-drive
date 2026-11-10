@@ -4,10 +4,35 @@
 
 | Data | Where | Back up how |
 |---|---|---|
-| Documents, SAP components, SAP metadata (`~sapdoc.json`), SAP certificates (`~certs`) | The SharePoint library | Microsoft 365 backup, retention policies and the SharePoint recycle bin. ZAKS Drive adds no backup of its own |
+| Documents of **SharePoint** repositories, SAP components, SAP metadata (`~sapdoc.json`), SAP certificates (`~certs`) | The SharePoint library | Microsoft 365 backup, retention policies and the SharePoint recycle bin. ZAKS Drive adds no backup of its own |
+| Managed repositories, **local documents**, repository secrets, admin password hash | The `state` volume | [The state volume](#the-state-volume) below |
 | `deploy/.env`, `deploy/config.yaml` | The server | Keep copies in a password vault or configuration store. `.env` holds secrets |
 | The `spool` volume | The server | Not needed. It holds temporary upload data only |
 | The container | Nowhere | Rebuild from the repository |
+
+## The state volume
+
+Managed repositories keep their data in the **`state` volume** (`/var/lib/zaks-drive` in the container). **Back it up.** It is the only place that holds:
+
+| In the volume | What it is |
+|---|---|
+| `data/<path>/` | the **documents of local repositories** (and their `.versions/`) |
+| `repos.d/`, `detached/`, `last-good/` | repository definitions (no secrets) |
+| `secrets/<ID>/client-secret` | the client secret of a repository with its own Microsoft application (mode 600) |
+| `admin.json` | the hash of the admin page password |
+| `audit.log` | who changed what and when |
+
+SharePoint repositories keep their *documents* in SharePoint; the volume then only holds their definitions and secrets, which is small but needed to bring the repository back without re-entering it.
+
+**Never run `docker compose down -v` on a deployment with local repositories**: it deletes the volume. Stop the server for a consistent copy, then archive the volume (the archive holds secrets: keep it encrypted and restricted):
+
+```bash
+zaks-drive stop
+docker run --rm -v <project>_state:/s -v "$PWD":/b alpine tar czf /b/zd-state-$(date +%F).tar.gz -C /s .
+zaks-drive start
+```
+
+Restore: install and run `setup` on the new server with the same `.env`, `zaks-drive stop`, extract into the volume, `chown -R 65532:65532` it (the server's user), `zaks-drive start`, then `zaks-drive repo list` and `zaks-drive repo check <id>`. The whole sequence with commands: [guide, Scenario 10](../guide.md#scenario-10-back-up-and-restore). There is no replication between hosts; the local backend is for one server instance.
 
 ## Rebuild a server
 

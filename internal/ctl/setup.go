@@ -21,15 +21,18 @@ import (
 
 // Answers are the choices that make up a deployment.
 type Answers struct {
-	Dir             string
-	Bind            string
-	RESTPort        int
-	CSPort          int
-	AdminPort       int
-	Interfaces      []string
-	SiteURL         string
-	Library         string
-	RootPath        string
+	Dir        string
+	Bind       string
+	RESTPort   int
+	CSPort     int
+	AdminPort  int
+	Interfaces []string
+	SiteURL    string
+	Library    string
+	RootPath   string
+	// Storage is where documents go first: "sharepoint" (a Microsoft application and a site) or
+	// "local" (a folder on this server; no Microsoft account is needed).
+	Storage         string
 	TenantID        string
 	ClientID        string
 	ClientSecret    string
@@ -64,6 +67,7 @@ func (a *App) cmdSetup(ctx context.Context, args []string) int {
 	cs := fset.Int("cs-port", 0, "host port of the SAP Content Server interface (default 8090)")
 	admin := fset.Int("admin-port", 0, "host port of the admin/health endpoint, bound to 127.0.0.1 (default 9090)")
 	ifaces := fset.String("interfaces", "", "comma-separated: rest, contentrepo (default both)")
+	storage := fset.String("storage", "", "where documents are stored first: local (a folder on this server, no Microsoft account needed) or sharepoint (default; asked when interactive)")
 	site := fset.String("site-url", "", "SharePoint site address, e.g. https://contoso.sharepoint.com/sites/SAP_DOCS")
 	library := fset.String("library", "", "document library display name (default Documents)")
 	root := fset.String("root-path", "", "folder inside the library (default SAP_DMS)")
@@ -132,9 +136,36 @@ func (a *App) cmdSetup(ctx context.Context, args []string) int {
 	ans.ClientID = pick(*client, "GRAPH_CLIENT_ID", "")
 	ans.LogLevel = pick(*logLevel, "LOG_LEVEL", "info")
 	ans.TLS = *tls
+	// Where documents go first. Without a Microsoft account a local folder is the way to start; a
+	// SharePoint repository (with its own Entra application if you like) can be added at any time
+	// with `zaks-drive repo add`.
+	microsoftGiven := *site != "" || *tenant != "" || *client != "" || *secretFile != "" || a.env("ZAKS_DRIVE_CLIENT_SECRET") != "" ||
+		existing["GRAPH_TENANT_ID"] != "" || existing["SHAREPOINT_SITE_URL"] != ""
+	ans.Storage = *storage
+	if ans.Storage == "" {
+		ans.Storage = "sharepoint"
+		if interactive {
+			def := "local"
+			if microsoftGiven {
+				def = "sharepoint"
+			}
+			a.printf("Where will documents be stored first?\n  local       a folder on this server (no Microsoft account needed; good for trying it out)\n  sharepoint  SharePoint Online or OneDrive for Business (needs a Microsoft Entra application)\nYou can add repositories of either kind later with: zaks-drive repo add\n")
+			ans.Storage = strings.ToLower(strings.TrimSpace(a.ask("Storage", def)))
+		}
+	}
+	if ans.Storage != "local" && ans.Storage != "sharepoint" {
+		return a.fail(ExitUsage, fmt.Sprintf("--storage %q is not known", ans.Storage), "use local or sharepoint")
+	}
+	if ans.Storage == "local" && (*site != "" || *tenant != "" || *client != "" || *secretFile != "" || *library != "" || *root != "") {
+		return a.fail(ExitUsage, "the SharePoint and Microsoft options do not apply with --storage local",
+			"leave them out, or use --storage sharepoint; a SharePoint repository can be added later with: zaks-drive repo add")
+	}
 	ans.Interfaces = splitCSV(*ifaces)
 	if len(ans.Interfaces) == 0 {
 		ans.Interfaces = []string{"rest", "contentrepo"}
+		if ans.Storage == "local" {
+			ans.Interfaces = []string{"rest"} // SAP is added per repository (repo add --sap); enable it with --interfaces rest,contentrepo
+		}
 	}
 	for _, c := range contReps {
 		id, sig, _ := strings.Cut(c, ":")
@@ -167,28 +198,36 @@ func (a *App) cmdSetup(ctx context.Context, args []string) int {
 		ans.RESTPort = atoiOr(a.ask("REST API host port", strconv.Itoa(ans.RESTPort)), ans.RESTPort)
 		ans.CSPort = atoiOr(a.ask("SAP Content Server host port", strconv.Itoa(ans.CSPort)), ans.CSPort)
 		ans.AdminPort = atoiOr(a.ask("Admin/health host port (always bound to 127.0.0.1)", strconv.Itoa(ans.AdminPort)), ans.AdminPort)
-		a.printf("\nMicrosoft 365 (see docs/microsoft-365/entra-app-registration.md)\n")
-		ans.TenantID = a.ask("Directory (tenant) ID", ans.TenantID)
-		ans.ClientID = a.ask("Application (client) ID", ans.ClientID)
-		if ans.ClientSecret == "" {
-			s, err := a.askSecret("Client secret VALUE (not the secret ID; input is hidden)", haveSecret)
-			if err != nil {
-				return a.fail(ExitUsage, "could not read the client secret: "+err.Error(), "")
+		if ans.Storage == "sharepoint" {
+			a.printf("\nMicrosoft 365 (see docs/microsoft-365/entra-app-registration.md)\n")
+			ans.TenantID = a.ask("Directory (tenant) ID", ans.TenantID)
+			ans.ClientID = a.ask("Application (client) ID", ans.ClientID)
+			if ans.ClientSecret == "" {
+				s, err := a.askSecret("Client secret VALUE (not the secret ID; input is hidden)", haveSecret)
+				if err != nil {
+					return a.fail(ExitUsage, "could not read the client secret: "+err.Error(), "")
+				}
+				ans.ClientSecret = s
 			}
-			ans.ClientSecret = s
+			a.printf("\nWhere documents are stored\n")
+			ans.SiteURL = a.ask("SharePoint site address (https://<tenant>.sharepoint.com/sites/<site>)", ans.SiteURL)
+			ans.Library = a.ask("Document library display name (empty = the site's default library)", ans.Library)
+			ans.RootPath = a.ask("Folder inside the library (created automatically)", ans.RootPath)
 		}
-		a.printf("\nWhere documents are stored\n")
-		ans.SiteURL = a.ask("SharePoint site address (https://<tenant>.sharepoint.com/sites/<site>)", ans.SiteURL)
-		ans.Library = a.ask("Document library display name (empty = the site's default library)", ans.Library)
-		ans.RootPath = a.ask("Folder inside the library (created automatically)", ans.RootPath)
 		a.printf("\nSAP Content Server interface\n")
-		sap := a.ask("Enable the SAP Content Server interface? (y/n)", "y")
+		sapDefault := "y"
+		if ans.Storage == "local" {
+			sapDefault = "n" // a local folder is easiest to try through the REST API first
+		}
+		sap := a.ask("Enable the SAP Content Server interface? (y/n)", sapDefault)
 		if strings.HasPrefix(strings.ToLower(sap), "n") {
 			ans.Interfaces = []string{"rest"}
 		} else {
 			ans.Interfaces = []string{"rest", "contentrepo"}
-			ids := a.ask("SAP content repository IDs created in OAC0 (comma-separated)", joinContReps(ans.ContReps))
-			ans.ContReps = parseContReps(ids)
+			if ans.Storage == "sharepoint" {
+				ids := a.ask("SAP content repository IDs created in OAC0 (comma-separated)", joinContReps(ans.ContReps))
+				ans.ContReps = parseContReps(ids)
+			}
 			nets := a.ask("Networks allowed to call it (comma-separated CIDR, empty = any; recommended: your SAP servers)", strings.Join(ans.AllowedNetworks, ","))
 			ans.AllowedNetworks = splitCSV(nets)
 		}
@@ -299,6 +338,10 @@ func (a *App) validateCandidate(envText, cfgText []byte) int {
 	if err := os.WriteFile(td.ConfigFile, cfgText, 0o600); err != nil {
 		return a.fail(ExitFail, err.Error(), "")
 	}
+	// The compose file tells the loader that the deployment has a state directory (repositories may come from there).
+	if err := os.WriteFile(td.ComposeFile, deploy.ComposeRelease, 0o600); err != nil {
+		return a.fail(ExitFail, err.Error(), "")
+	}
 	if _, problems := a.validateDeployment(td); len(problems) > 0 {
 		a.errorf("zaks-drive: the configuration would not be valid, so nothing was written:\n")
 		for _, p := range problems {
@@ -315,11 +358,18 @@ func (a *App) printSummary(ans Answers, built string) {
 	a.printf("  config.yaml    mode 644  (no secrets; the container must be able to read it)\n")
 	a.printf("  Listens on     %s: REST %d, SAP %d; admin 127.0.0.1:%d\n", ans.Bind, ans.RESTPort, ans.CSPort, ans.AdminPort)
 	a.printf("  Interfaces     %s\n", strings.Join(ans.Interfaces, ", "))
-	a.printf("  Tenant         %s\n", ans.TenantID)
-	a.printf("  Client         %s (secret: set, %d characters, not shown)\n", ans.ClientID, len(ans.ClientSecret))
-	a.printf("  SharePoint     %s, library %q, folder %q\n", ans.SiteURL, ans.Library, ans.RootPath)
+	if ans.Storage == "local" {
+		a.printf("  Storage        local folder (no Microsoft account configured; add SharePoint repositories later with: zaks-drive repo add)\n")
+	} else {
+		a.printf("  Tenant         %s\n", ans.TenantID)
+		a.printf("  Client         %s (secret: set, %d characters, not shown)\n", ans.ClientID, len(ans.ClientSecret))
+		a.printf("  SharePoint     %s, library %q, folder %q\n", ans.SiteURL, ans.Library, ans.RootPath)
+	}
 	if contains(ans.Interfaces, "contentrepo") {
 		for _, c := range ans.ContReps {
+			if ans.Storage == "local" {
+				break // the SAP repositories of a local deployment are created with: zaks-drive repo add ID --sap
+			}
 			a.printf("  SAP repository %s (signature: %s)\n", c.ID, c.Signature)
 			if c.Signature == "none" {
 				a.printf("    WARNING: signature none disables SAP signature checks; use it for tests only\n")
@@ -337,6 +387,11 @@ func (a *App) printSummary(ans Answers, built string) {
 	a.printf("  API keys       generated (3 values in .env: ADAPTER_API_KEY_S4, ADAPTER_API_KEY_FIORI, ADMIN_TOKEN)\n")
 	if built != "" {
 		a.printf("  Image          %s\n", built)
+	}
+	if ans.Storage == "local" {
+		a.printf("\nNext (no Microsoft account needed):\n  zaks-drive start --dir %s\n  zaks-drive repo add AD --backend local --yes --dir %s     # your first repository: a folder on this server\n", ans.Dir, ans.Dir)
+		a.printf("  then open the admin page (first login admin / admin, you will choose a new password) or try the REST API.\nLater, add SharePoint repositories (each may have its own Microsoft application): zaks-drive repo add ZH --backend sharepoint ...\n")
+		return
 	}
 	a.printf("\nNext: zaks-drive --help shows the commands. Start with:\n  zaks-drive start --dir %s\n  zaks-drive check --dir %s   (tests Microsoft access)\n", ans.Dir, ans.Dir)
 }
@@ -361,26 +416,28 @@ func validateAnswers(ans Answers) []string {
 			p = append(p, fmt.Sprintf("the interface %q is unknown (use rest and/or contentrepo)", i))
 		}
 	}
-	if ans.SiteURL == "" {
-		p = append(p, "the SharePoint site address is required (--site-url)")
-	}
-	if !guidRe.MatchString(ans.TenantID) {
-		p = append(p, "the tenant ID must be a GUID like 00000000-0000-0000-0000-000000000000 (--tenant-id)")
-	}
-	if !guidRe.MatchString(ans.ClientID) {
-		p = append(p, "the client ID must be a GUID like 00000000-0000-0000-0000-000000000000 (--client-id)")
-	}
-	if ans.ClientSecret == "" {
-		p = append(p, "the client secret is required (--client-secret-file FILE, or ZAKS_DRIVE_CLIENT_SECRET, or type it when prompted)")
-	} else if guidRe.MatchString(ans.ClientSecret) {
-		p = append(p, "the client secret looks like a secret ID (a GUID): use the secret VALUE shown once when the secret was created")
-	}
-	for name, v := range map[string]string{"site address": ans.SiteURL, "library": ans.Library, "folder": ans.RootPath, "tenant ID": ans.TenantID, "client ID": ans.ClientID, "client secret": ans.ClientSecret} {
-		if strings.ContainsAny(v, "\r\n\x00") {
-			p = append(p, "the "+name+" must not contain line breaks")
+	if ans.Storage != "local" { // a local folder needs no Microsoft account
+		if ans.SiteURL == "" {
+			p = append(p, "the SharePoint site address is required (--site-url)")
 		}
-		if strings.Contains(v, "'") {
-			p = append(p, "the "+name+" must not contain a single quote")
+		if !guidRe.MatchString(ans.TenantID) {
+			p = append(p, "the tenant ID must be a GUID like 00000000-0000-0000-0000-000000000000 (--tenant-id)")
+		}
+		if !guidRe.MatchString(ans.ClientID) {
+			p = append(p, "the client ID must be a GUID like 00000000-0000-0000-0000-000000000000 (--client-id)")
+		}
+		if ans.ClientSecret == "" {
+			p = append(p, "the client secret is required (--client-secret-file FILE, or ZAKS_DRIVE_CLIENT_SECRET, or type it when prompted)")
+		} else if guidRe.MatchString(ans.ClientSecret) {
+			p = append(p, "the client secret looks like a secret ID (a GUID): use the secret VALUE shown once when the secret was created")
+		}
+		for name, v := range map[string]string{"site address": ans.SiteURL, "library": ans.Library, "folder": ans.RootPath, "tenant ID": ans.TenantID, "client ID": ans.ClientID, "client secret": ans.ClientSecret} {
+			if strings.ContainsAny(v, "\r\n\x00") {
+				p = append(p, "the "+name+" must not contain line breaks")
+			}
+			if strings.Contains(v, "'") {
+				p = append(p, "the "+name+" must not contain a single quote")
+			}
 		}
 	}
 	if ans.LogLevel != "debug" && ans.LogLevel != "info" && ans.LogLevel != "warn" && ans.LogLevel != "error" {
@@ -421,10 +478,17 @@ func renderEnv(ans Answers) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("# Written by zaks-drive setup. This file holds secrets: keep it at mode 600 and never commit it.\n")
 	b.WriteString("# After editing it: zaks-drive restart\n\n")
-	b.WriteString("# Microsoft Entra application\n")
-	fmt.Fprintf(&b, "GRAPH_TENANT_ID=%s\nGRAPH_CLIENT_ID=%s\nGRAPH_CLIENT_SECRET=%s\n\n", envValue(ans.TenantID), envValue(ans.ClientID), envValue(ans.ClientSecret))
-	b.WriteString("# Where documents are stored in SharePoint\n")
-	fmt.Fprintf(&b, "SHAREPOINT_SITE_URL=%s\nSHAREPOINT_LIBRARY=%s\nSHAREPOINT_ROOT_PATH=%s\n\n", envValue(ans.SiteURL), envValue(ans.Library), envValue(ans.RootPath))
+	if ans.Storage == "local" {
+		b.WriteString("# No Microsoft account is configured: documents are stored in a folder on this server.\n")
+		b.WriteString("# SharePoint repositories can be added later with: zaks-drive repo add <id> --backend sharepoint ...\n")
+		b.WriteString("# (each may bring its own Microsoft application). Fill these three only if you want a shared global one:\n")
+		b.WriteString("GRAPH_TENANT_ID=\nGRAPH_CLIENT_ID=\nGRAPH_CLIENT_SECRET=\n\n")
+	} else {
+		b.WriteString("# Microsoft Entra application\n")
+		fmt.Fprintf(&b, "GRAPH_TENANT_ID=%s\nGRAPH_CLIENT_ID=%s\nGRAPH_CLIENT_SECRET=%s\n\n", envValue(ans.TenantID), envValue(ans.ClientID), envValue(ans.ClientSecret))
+		b.WriteString("# Where documents are stored in SharePoint\n")
+		fmt.Fprintf(&b, "SHAREPOINT_SITE_URL=%s\nSHAREPOINT_LIBRARY=%s\nSHAREPOINT_ROOT_PATH=%s\n\n", envValue(ans.SiteURL), envValue(ans.Library), envValue(ans.RootPath))
+	}
 	b.WriteString("# Access to ZAKS Drive itself\n")
 	fmt.Fprintf(&b, "ADAPTER_API_KEY_S4=%s\nADAPTER_API_KEY_FIORI=%s\nADMIN_TOKEN=%s\n\n", ans.APIKeyS4, ans.APIKeyFiori, ans.AdminToken)
 	b.WriteString("# Host ports and address (the admin port is always bound to 127.0.0.1)\n")
@@ -441,6 +505,11 @@ var (
 	tlsKeyRe  = regexp.MustCompile(`(?m)^  # (tlsKeyFile: .*)$`)
 	netsRe    = regexp.MustCompile(`(?m)^(  allowedNetworks: )\[\]`)
 	logLvlRe  = regexp.MustCompile(`(?m)^(  level: )\w+`)
+
+	// Parts of the example configuration that a local-first deployment leaves out (tolerant of CRLF checkouts).
+	staticRepoRe = regexp.MustCompile(`\r?\nrepositories:\r?\n  - id: DMS\r?\n    siteUrl: \$\{SHAREPOINT_SITE_URL\}\r?\n    driveName: \$\{SHAREPOINT_LIBRARY\}\r?\n    rootPath: \$\{SHAREPOINT_ROOT_PATH\}\r?\n`)
+	fioriReposRe = regexp.MustCompile(`(key: \$\{ADAPTER_API_KEY_FIORI\}[^\n]*\r?\n      repositories: )\[DMS\]`)
+	csReposRe    = regexp.MustCompile(`(?s)(\n  autoActivateCertificates: false\r?\n  )repositories:.*?(\r?\n\r?\nlog:)`)
 )
 
 // renderConfig starts from the commented example configuration and changes only what the
@@ -460,6 +529,15 @@ func renderConfig(ans Answers) []byte {
 		s = netsRe.ReplaceAllString(s, "${1}["+strings.Join(q, ", ")+"]")
 	}
 	s = logLvlRe.ReplaceAllString(s, "${1}"+ans.LogLevel)
+
+	if ans.Storage == "local" {
+		// No static SharePoint repository and no SAP repositories: they are created with `zaks-drive repo add`
+		// (stored in the state volume), and the read-only key is not tied to a repository that does not exist.
+		s = staticRepoRe.ReplaceAllString(s, "\nrepositories: []   # none yet: add one with `zaks-drive repo add` (a local folder or SharePoint)\n")
+		s = fioriReposRe.ReplaceAllString(s, `${1}["*"]`)
+		s = csReposRe.ReplaceAllString(s, "${1}repositories: []   # SAP content repositories come from `zaks-drive repo add <id> --sap`${2}")
+		return []byte(s)
+	}
 
 	// Replace the content repositories list.
 	start := strings.Index(s, "contentServer:")

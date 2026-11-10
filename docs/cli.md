@@ -6,7 +6,7 @@
 
 ## Contents
 
-[Install](#install) · [First-time setup](#first-time-setup) · [Start, stop, status](#start-stop-restart-and-status) · [Logs](#logs) · [Health checks: doctor](#health-checks-doctor) · [SAP troubleshooting](#sap-troubleshooting) · [Microsoft Graph connectivity](#microsoft-graph-connectivity) · [Updates and rollback](#updates-and-rollback) · [Support bundles](#support-bundles) · [Security](#security-considerations) · [Uninstall](#uninstall) · [Reference](#reference)
+[Install](#install) · [First-time setup](#first-time-setup) · [Start, stop, status](#start-stop-restart-and-status) · [Logs](#logs) · [Health checks: doctor](#health-checks-doctor) · [Repositories](#repositories-several-storage-locations) · [SAP troubleshooting](#sap-troubleshooting) · [Microsoft Graph connectivity](#microsoft-graph-connectivity) · [Updates and rollback](#updates-and-rollback) · [Support bundles](#support-bundles) · [Security](#security-considerations) · [Uninstall](#uninstall) · [Reference](#reference)
 
 ## Install
 
@@ -80,6 +80,10 @@ How it protects you:
 - API keys and the admin token are generated randomly (256 bits).
 - An existing configuration is not replaced without `--force`; then the old files are backed up (the `.env` backup stays `600`) and existing keys are kept.
 - The client secret may be given as a file or environment variable for automation, never as a command-line value.
+
+### Starting without a Microsoft account
+
+The first question of `zaks-drive setup` is where documents are stored first. Answer **local** (or pass `--storage local`) and no tenant, client, secret or SharePoint site is asked for or written; `.env` has the three `GRAPH_*` values empty and `config.yaml` has no repository yet. `zaks-drive start` then reports that the server is running but has no repository ("not ready" is expected until you add one), and `zaks-drive repo add AD --backend local --yes` creates the first one. SharePoint repositories, each with the global Microsoft application or its own, can be added at any time with `repo add --backend sharepoint`. The storage type of a repository is chosen when it is created and cannot be changed later. Step by step: [setup and usage guide](guide.md#3-run-the-setup-wizard).
 
 ### Non-interactive setup
 
@@ -175,7 +179,7 @@ zaks-drive doctor --list           # every diagnostic and how it works
 [PASS   ] config-valid        config.yaml and .env load without errors
 [WARN   ] repository-mapping  contentServer.allowedNetworks is empty: any host that reaches the SAP port may call it
                                 fix: tighten the settings before production use
-[PASS   ] readiness           ready: the server reached SharePoint with its credentials
+[PASS   ] readiness           ready: every repository is reachable
 [PASS   ] sap-endpoint        serverInfo answers and lists 1 configured repositories (SAP itself was not contacted)
 [SKIPPED] graph-connectivity  not requested: this test contacts Microsoft and writes small test files to SharePoint
 
@@ -198,6 +202,8 @@ Exit code 0 when nothing FAILED (1 otherwise; `--strict` also fails on warnings)
 | `file-permissions` | mode of `.env` and `tls/tls.key` | `.env` is readable by every user | `.env` readable by its group; TLS key readable by others |
 | `config-valid` | loads `config.yaml` with the server's own loader, `.env` only as environment; contacts nothing | the loader reports errors (codes in [error codes](error-codes.md)) | |
 | `api-keys` | length of API keys and admin token in `.env`; whether REST authentication is disabled | | a key under 32 characters, or authentication disabled |
+| `repositories` | asks the server's admin API (`ADMIN_TOKEN` from `.env`, localhost only): changes waiting for a restart, fallback to the last working state, repositories defined but not served | the server fell back to the last working repository state | changes pending a restart, or a repository not served |
+| `admin-password` | asks the server's admin API whether the admin web page still accepts the default login `admin` / `admin` | | the default password is still active |
 | `repository-mapping` | every SAP content repository maps to a repository; risky settings | a mapping points nowhere | signature `none`, or no `allowedNetworks` with the SAP interface enabled |
 | `container-state` | `docker compose ps` for this deployment, restart counts via `docker inspect` of those IDs | stopped, unhealthy, or 3 or more restarts | not started, 1 or 2 restarts, health still starting |
 | `container-resources` | OOM-kill flag and memory limit of the running container | killed for exceeding its memory limit | no memory limit |
@@ -212,6 +218,79 @@ Exit code 0 when nothing FAILED (1 otherwise; `--strict` also fails on warnings)
 | `graph-connectivity` | only with `--connectivity`: runs the server's `check` inside the container | a required SharePoint access is missing | |
 
 Docker's own data directory and SAP are not inspected. The command reads only: the files of the deployment, the container list of its compose file, `docker inspect` of those containers, and `127.0.0.1` HTTP endpoints. It never runs `ss`, `lsof` or other host tools; where those would help it only suggests them.
+
+## Repositories: several storage locations
+
+A deployment can serve several repositories (`Z1`, `ZH`, `AD`, ...). Each one stores its documents either in **SharePoint / OneDrive** or in a **local folder** on the server, and can be exposed to SAP as a content repository of the same ID. The design is in [RFC 0001](rfcs/0001-repositories-and-storage-backends.md).
+
+Repositories that you create with `zaks-drive repo` are **managed**: their definitions, their secrets and the documents of local repositories live in the server's own **state volume** (`/var/lib/zaks-drive`), never in `config.yaml`. Repositories written in `config.yaml` stay valid; they are **static** and read-only for these commands.
+
+```bash
+zaks-drive repo list                          # repositories, backend, source, SAP ID, state
+zaks-drive repo add AD --backend local --sap  # a local-folder repository, exposed to SAP as AD
+zaks-drive repo add ZH --backend sharepoint --site-url https://contoso.sharepoint.com/sites/hr \
+    --library Documents --root-path SAP_HR --sap \
+    --tenant-id <guid> --client-id <guid> --secret-file ./zh-secret     # its own Microsoft application
+zaks-drive repo update AD --versions 10       # change only what you name
+zaks-drive repo check ZH                      # test one repository (SharePoint: contacts Microsoft)
+zaks-drive repo remove AD                     # detach: no longer served, documents are kept
+```
+
+| Command | What it does |
+|---|---|
+| `repo list [--json]` | Every repository with backend, source (`static` or `managed`), SAP content repository, state (`serving`, `pending restart`) and location; detached repositories are listed separately. |
+| `repo show <id> [--json]` | The settings of one repository. Secrets are shown only as *set* or *NOT set*. |
+| `repo add <id> --backend local\|sharepoint ...` | Creates a repository. The ID is **exactly 2 characters, A-Z or 0-9**. |
+| `repo update <id> ...` | Changes the options you pass. `--global-app` returns to the global `graph.*` application, `--no-sap` stops exposing it to SAP. |
+| `repo remove <id>` | **Detaches** the repository. Documents are **not** deleted, and adding it again serves them again. A repository exposed to SAP needs `--allow-in-use`. |
+| `repo check <id>` | Tests one repository with the server's own code. Local: write, read, replace (a version is kept), delete, free disk space. SharePoint: the `check` steps for that repository, with its own application. |
+| `repo purge <id> --plan` / `--execute` | Deletes the documents of a **detached local** repository. See [Purging](#purging-a-repository). |
+
+**Options.** Local: `--path FOLDER` (below the data directory; default: the ID), `--versions N` (previous versions kept per file, 0 to 99, default 5). SharePoint: `--site-url`, `--library`, `--root-path`, `--user-id`, `--drive-id`, `--site-id`. Own Microsoft application: `--tenant-id`, `--client-id` and the secret from `--secret-file FILE`, `--secret-stdin` or a hidden prompt; **a secret is never accepted as a command-line value**. SAP: `--sap`, `--cont-rep ID` (default: the ID), `--signature required|optional|none`. Others: `--description`, `--read-only`, `--yes`, `--no-restart`, `--dir`.
+
+**How a change is made.** The command does not edit files. When the server runs it calls the server's **admin API** (localhost, `ADMIN_TOKEN` from `.env`); when the server is stopped it runs the same operation in a **one-off container** of the same image and volume (`docker compose run --rm`). Either way the files are created by the server's own user, a secret is written as its own mode-600 file, and the server's own loader validates the result: an invalid change is rolled back and nothing is saved. Every change is recorded in `audit.log` in the volume (who, when, which repository; never a secret).
+
+**Applying a change.** A change takes effect by a **restart through maintenance mode**: new requests get `503` with `Retry-After` (SAP retries those), running requests finish for up to `server.drainTimeout` (default 30 s), then the server ends and Docker starts it again with the new repositories. Requests that outlast the drain are cut and their request IDs are logged. `--no-restart` leaves the change pending; `status` and `doctor` then report "changes pending restart". If the new definitions do not validate at start, the server keeps serving the **last working state** and says so in `status`, `doctor` and the log.
+
+**First repository.** With the supplied compose files a server with no repository yet starts, reports `not ready: no repository is configured yet` and waits. Add the first one with `zaks-drive repo add` (a one-off container is used while the server has nothing to serve) and restart.
+
+**Requirements.** The admin API needs `ADMIN_TOKEN` in `.env` (long and random). Without it the change is still saved through the one-off container, but it cannot be applied with a drained restart: use `zaks-drive restart`.
+
+### Local repositories
+
+The documents are files in a folder of the state volume. Good to know:
+
+- One server instance owns the folder; there is no replication, locking across hosts or NFS guarantee. **Back up the `state` volume**, and use an encrypted volume or disk if you need encryption at rest.
+- Every operation is confined to the repository's folder; links inside it are ignored.
+- On replace, the previous contents are kept as versions (0 to 99, `--versions`).
+- Search matches file names only; there are no thumbnails and no redirect downloads. Unsupported thumbnails answer `THUMBNAIL_UNAVAILABLE`.
+- Names are limited to 255 bytes; the SharePoint rule of 400 characters for a whole path does not apply.
+
+### Purging a repository
+
+`repo remove` only detaches. **`repo purge` deletes the documents** and is deliberately hard to do:
+
+- **SAP has no purge.** SAP keeps references (DMS originals, archive links, attachments). Purging the data behind them leaves SAP pointing at documents that no longer exist, and other repositories integrated with that data can become unstable. This cannot be repaired from here, and **you take full responsibility**.
+- It exists **only** in this command on the Docker host, never in the admin API or a UI, and only for **detached local** repositories. SharePoint content is never deleted by ZAKS Drive.
+- The repository must already be detached and the server restarted without it; the command refuses while the server still serves it or changes are pending.
+- `repo purge <id> --plan` counts what would be deleted and prints a **challenge phrase** valid for 15 minutes and bound to exactly that state of the folder. `repo purge <id> --execute --i-understand-this-destroys-documents` then asks you to type the repository ID and the phrase (without a terminal: `--typed-id` and `--challenge`). If anything in the folder changed since the plan, or the phrase expired, it is refused.
+- Deletion stays inside the repository's own folder and removes links without following them. Plan and purge are written to the audit log. There is no `--yes`, no environment variable and no setting that skips these steps.
+
+## Admin UI password
+
+The [admin UI](ui.md) is on by default. Its login is the user **`admin`** with a password **you choose at the first login**: until then the page accepts `admin` / `admin`, but only to set a new password (nothing else is reachable with it). The password is stored only as a salted Argon2id hash in the state volume (`admin.json`, mode 600). It is separate from the `ADMIN_TOKEN` in `.env`, which this command and your scripts keep using.
+
+`zaks-drive doctor` warns (`admin-password`) while the default is still active. Choose the password soon after the first start, and keep the admin port on `127.0.0.1`.
+
+**Forgot it?** On the Docker host:
+
+```bash
+zaks-drive admin reset-password        # asks first; --yes for scripts, --no-restart to only record the request
+```
+
+This creates an empty file `NO_ADMIN` in the state volume (through a one-off container, like `repo`) and restarts the server through its drain. After the restart the login is `admin` / `admin` again, to be changed at once, and **the server deletes `NO_ADMIN` as soon as the new password is set**. You can do the same by hand: create an empty file named `NO_ADMIN` in the root of the state volume and restart the server. A `NO_ADMIN` file left over from earlier (older than the last password change) is ignored and removed, so it can never reset a password twice. If `admin.json` is ever unreadable, nobody can log in (the server never falls back to `admin` / `admin`) until a reset.
+
+Reset needs shell access to the Docker host, the same trust level that already reaches every secret in the volume; it cannot be done from the browser.
 
 ## SAP troubleshooting
 
@@ -358,12 +437,13 @@ gh attestation verify zaks-drive_0.1.0-beta.1_linux_amd64.tar.gz --repo Lamiv/za
 
 ## Uninstall
 
-There is deliberately no `uninstall` command: removal is destructive and you should see each step. Documents live in SharePoint and are **not** affected by any step below; the container holds only the temporary `spool` volume.
+There is deliberately no `uninstall` command: removal is destructive and you should see each step. Documents of **SharePoint** repositories live in SharePoint and are not affected by any step below. **Local repositories keep their documents, the repository definitions, secrets, the admin password and the audit log in the `state` volume, and `down -v` deletes that volume.** Back it up first ([backup guide](operations/backup-recovery.md#the-state-volume)) or never use `-v`.
 
 ```bash
 zaks-drive stop --dir /opt/zaks-drive                              # 1. stop (keeps everything)
-docker compose -f /opt/zaks-drive/docker-compose.yml down          # 2. remove the containers (keeps the volume)
-docker compose -f /opt/zaks-drive/docker-compose.yml down -v       #    optional: also the spool volume (temporary upload data)
+docker compose -f /opt/zaks-drive/docker-compose.yml down          # 2. remove the containers (keeps the volumes, including state)
+docker volume ls --filter name=spool                               #    optional: remove only the spool volume (temporary upload data):
+# docker volume rm <project>_spool                                 #    NEVER `down -v` on a deployment that has local repositories
 docker image rm zaks-drive:0.1.0-beta.1                            # 3. remove an image you no longer need (compose needs ZAKS_DRIVE_VERSION set)
 rm -r /opt/zaks-drive                                              # 4. the deployment directory: this deletes .env and config.yaml
 rm ~/.local/bin/zaks-drive && rm -r ~/.local/share/zaks-drive      # 5. the command and the release payloads
@@ -384,6 +464,8 @@ Also: delete or rotate the client secret in Microsoft Entra, and remove the repo
 | `logs` | sanitized logs (`--follow`, `--tail`, `--since`, `--level`, `--iface`, `--request-id`, `--output`) |
 | `doctor` | diagnostics (`--json`, `--connectivity`, `--strict`, `--list`) |
 | `check` | the server's SharePoint access checklist (contacts Microsoft) |
+| `admin` | `reset-password`: return the admin UI login to `admin` / `admin` ([details](#admin-ui-password)) |
+| `repo` | `list`, `show`, `add`, `update`, `remove`, `check`, `purge`: manage repositories ([details](#repositories-several-storage-locations)) |
 | `update`, `rollback` | verified updates with automatic rollback |
 | `support bundle` | sanitized diagnostics archive |
 

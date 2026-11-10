@@ -92,6 +92,8 @@ var (
 		"The JSON body is missing or malformed.", "Send valid JSON as described in the OpenAPI document (docs/openapi.yaml).")
 	ThumbnailSizeInvalid = def(AreaDoc, "THUMBNAIL_SIZE_INVALID", 400, "Unknown thumbnail size",
 		"`size` must be `small`, `medium` or `large`.", "Use one of the three values.")
+	ThumbnailUnavailable = def(AreaDoc, "THUMBNAIL_UNAVAILABLE", 404, "No thumbnail for this repository",
+		"The repository is stored in a local folder, which does not generate thumbnails (SharePoint repositories do).", "Download the document, or ask for thumbnails only on SharePoint repositories (`capabilities` in the repository list).")
 
 	// ---- SharePoint and Microsoft Graph ----
 	TokenFailed = def(AreaSP, "TOKEN_FAILED", 502, "Cannot obtain a Microsoft access token",
@@ -246,7 +248,24 @@ var (
 		"`contentServer.repositories[].repository` does not match any `repositories[].id`.", "Use one of the IDs under `repositories:`.")
 	CfgSignatureInvalid = def(AreaConfig, "CFG_SIGNATURE_INVALID", 0, "Unknown signature mode", "`signature` must be `required`, `optional` or `none`.", "Use `required` for production.")
 	CfgNetworkInvalid   = def(AreaConfig, "CFG_NETWORK_INVALID", 0, "Invalid network in allowedNetworks", "An entry is not an IP address or CIDR (for example 10.0.0.0/24).", "Fix the entry.")
-	StartupPortInUse    = def(AreaConfig, "STARTUP_PORT_IN_USE", 0, "A listen port is already in use",
+	CfgRepoIDInvalid    = def(AreaConfig, "CFG_REPO_ID_INVALID", 0, "Repository ID not allowed",
+		"Repositories managed through `zaks-drive repo` (files in the state directory's `repos.d`) have an ID of exactly 2 characters, A-Z or 0-9, the length of an SAP content repository ID, and the file must be named `<id>.yaml`.",
+		"Rename the repository, for example `ZH` or `A1`.")
+	CfgRepoBackendInvalid = def(AreaConfig, "CFG_REPO_BACKEND_INVALID", 0, "Unknown repository backend",
+		"`backend` must be `sharepoint` or `local`; a local repository also needs `server.stateDir`.", "Fix the value, and set `server.stateDir` (STATE_DIR) for local repositories.")
+	CfgRepoLocalInvalid = def(AreaConfig, "CFG_REPO_LOCAL_INVALID", 0, "Local repository settings not usable",
+		"`local.path` is missing, absolute, or contains `..`; or `local.versions` is outside 0 to 99. A local repository's path is relative to the data folder in the state directory.",
+		"Use a short relative folder name such as `AD`, and a `versions` number from 0 to 99 (default 5).")
+	CfgRepoCredentialsIncomplete = def(AreaConfig, "CFG_REPO_CREDENTIALS_INCOMPLETE", 0, "Repository credentials incomplete",
+		"A repository with its own Microsoft application needs `tenantId`, `clientId` and `clientSecretFile` together, and the other backend types take none of them.",
+		"Set all three, or none to use the global `graph.*` credentials.")
+	CfgRepoSecretUnreadable = def(AreaConfig, "CFG_REPO_SECRET_UNREADABLE", 0, "Repository secret file not usable",
+		"`clientSecretFile` must be a file below `secrets/` in the state directory, readable by the server, empty-free, and (on Linux) not accessible to group or others (mode 600).",
+		"Recreate the secret with `zaks-drive repo update <id>`, or `chmod 600` the file inside the state volume.")
+	CfgRepoFileInvalid = def(AreaConfig, "CFG_REPO_FILE_INVALID", 0, "Repository definition file not usable",
+		"A file in the state directory's `repos.d` is not valid YAML, has an unknown setting, is too large, or is not named after its repository ID.",
+		"Fix the file named in the detail, or remove it. The server keeps the last working state when a change fails to load.")
+	StartupPortInUse = def(AreaConfig, "STARTUP_PORT_IN_USE", 0, "A listen port is already in use",
 		"Another program (for example Cockpit on 9090) or another container already uses the address.",
 		"Set REST_PORT, CS_PORT or ADMIN_PORT in deploy/.env to a free host port and recreate the container. `ss -ltnp | grep :<port>` shows who holds it.")
 	StartupRepositoryFailed = def(AreaConfig, "STARTUP_REPOSITORY_FAILED", 0, "Cannot reach the configured SharePoint location",
@@ -259,6 +278,45 @@ var (
 	CLIAdminRouteMissing = def(AreaCLI, "CLI_ADMIN_ROUTE_MISSING", 0, "Certificate administration is not available",
 		"The admin endpoint answered 404: the `contentrepo` interface is not enabled, or the adapter is still starting.",
 		"Enable `contentrepo` in `server.interfaces`, wait for /readyz, and retry.")
+	AdminTokenRequired = def(AreaCLI, "ADMIN_TOKEN_REQUIRED", 503, "Repository administration needs an ADMIN_TOKEN",
+		"Changing repositories writes secrets, so the admin API refuses to work without an `ADMIN_TOKEN` (the certificate endpoints only check it when set).",
+		"Set ADMIN_TOKEN in deploy/.env to a long random value and recreate the container.")
+	AdminStateUnavailable = def(AreaCLI, "ADMIN_STATE_UNAVAILABLE", 503, "No state directory",
+		"Managed repositories live in the state directory (`server.stateDir`, STATE_DIR), which is not configured or cannot be written.",
+		"Use the supplied compose file, which mounts the `state` volume at /var/lib/zaks-drive and sets STATE_DIR, or set `server.stateDir`.")
+	AdminRepoNotFound = def(AreaCLI, "ADMIN_REPO_NOT_FOUND", 404, "No such managed repository",
+		"There is no repository with that ID in the state directory.", "`zaks-drive repo list` shows the repositories.")
+	AdminRepoExists = def(AreaCLI, "ADMIN_REPO_EXISTS", 409, "Repository already exists",
+		"A repository with that ID exists, in config.yaml or as a managed repository.", "Choose another ID, or update the existing repository.")
+	AdminRepoStatic = def(AreaCLI, "ADMIN_REPO_STATIC", 409, "Repository comes from config.yaml",
+		"Repositories defined in config.yaml are read-only for the management tools.", "Edit config.yaml and recreate the container, or move the repository into the managed set.")
+	AdminRepoInUse = def(AreaCLI, "ADMIN_REPO_IN_USE", 409, "Repository is exposed to SAP",
+		"The repository has an `sap` block, so SAP may still hold references to documents stored in it. Detaching it makes them unreachable.",
+		"Remove it from SAP first, or repeat the command with the explicit `allowInUse` confirmation.")
+	AdminRepoInvalid = def(AreaCLI, "ADMIN_REPO_INVALID", 400, "Repository settings rejected",
+		"The settings do not pass the server's own validation; nothing was changed. The detail names each problem.", "Correct the settings named and retry.")
+	AdminCSRFInvalid = def(AreaCLI, "ADMIN_CSRF_INVALID", 403, "Request not accepted from this page",
+		"A change made with a browser session must come from the admin page itself: it needs the session's CSRF token and an Origin that names this server.",
+		"Reload the admin page and try again. Scripts should use the Bearer ADMIN_TOKEN instead of a cookie.")
+	AdminPasswordChangeRequired = def(AreaCLI, "ADMIN_PASSWORD_CHANGE_REQUIRED", 403, "Set a new admin password first",
+		"The session was opened with the default (or reset) password admin/admin, which may only be used to choose a new password.",
+		"Choose a new password in the admin page (at least 12 characters), then continue.")
+	AdminPasswordRejected = def(AreaCLI, "ADMIN_PASSWORD_REJECTED", 400, "The new password is not accepted",
+		"The new password is too short (minimum 12 characters), too easy to guess, the same as the current one, or contains characters that are not allowed.",
+		"Use a longer password; a few unrelated words make a good passphrase.")
+	AdminAccountLocked = def(AreaCLI, "ADMIN_ACCOUNT_LOCKED", 423, "The admin account record is unreadable",
+		"admin.json in the state directory exists but cannot be read, so nobody can log in (the server never falls back to the default password).",
+		"Reset the account: `zaks-drive admin reset-password`, or create an empty file named NO_ADMIN in the state volume and restart the server.")
+	AdminApplyBusy = def(AreaCLI, "ADMIN_APPLY_BUSY", 409, "A restart is already in progress",
+		"The server is already draining requests for a restart.", "Wait for it to finish, or cancel it first.")
+	AdminPurgeUnsupported = def(AreaCLI, "ADMIN_PURGE_UNSUPPORTED", 409, "Only detached local repositories can be purged",
+		"A purge deletes the documents of a repository that was detached and stores its documents in a local folder. SharePoint content is never deleted by ZAKS Drive.",
+		"Detach the repository first (`zaks-drive repo remove`). For SharePoint, delete the folder in SharePoint itself; its recycle bin gives a recovery window.")
+	AdminPurgeAttached = def(AreaCLI, "ADMIN_PURGE_ATTACHED", 409, "The repository is still in use",
+		"The repository, or another one using the same folder, is still defined, so the server may be serving the documents.",
+		"Detach it with `zaks-drive repo remove`, restart the server, and run the purge again.")
+	AdminPurgeChallenge = def(AreaCLI, "ADMIN_PURGE_CHALLENGE", 400, "Purge confirmation does not match",
+		"The typed repository ID or the challenge phrase is wrong, expired (valid 15 minutes), belongs to another repository, or the folder changed after the plan was made.", "Run `zaks-drive repo purge <id> --plan` again and use the new phrase.")
 	CertNotReceived = def(AreaCLI, "CERT_NOT_RECEIVED", 400, "No certificate from SAP for this repository",
 		"`activate` / `deactivate` needs a certificate that SAP already sent with putCert for this contRep and authId.",
 		"In OAC0 choose Send certificate, run `adapter certs list`, and use the exact contRep and authId shown.")

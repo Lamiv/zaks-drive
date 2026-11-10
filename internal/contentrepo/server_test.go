@@ -31,6 +31,7 @@ import (
 	"github.com/Lamiv/zaks-drive/internal/graph"
 	"github.com/Lamiv/zaks-drive/internal/graphmock"
 	"github.com/Lamiv/zaks-drive/internal/storage"
+	"github.com/Lamiv/zaks-drive/internal/storage/storagetest"
 	"github.com/Lamiv/zaks-drive/internal/transfer"
 )
 
@@ -129,9 +130,19 @@ func setupCSWithLogger(t *testing.T, log *slog.Logger) *csEnv {
 	tokens := auth.NewClientCredentials(mock.URL, "tenant", "client", "secret", "scope", mock.Client())
 	gc := graph.New(graph.Options{BaseURL: mock.URL + "/v1.0", MaxConcurrency: 16, MaxRetries: 2, MaxRetryBackoff: 100 * time.Millisecond}, tokens, http.DefaultTransport, log)
 	eng := transfer.New(gc, transfer.Options{SimpleUploadMax: 1 << 20, ChunkSize: 320 << 10, MemoryBudget: 8 << 20, MaxUpload: 50 << 20, SpoolDir: t.TempDir()})
-	svc, err := storage.NewService(context.Background(), gc, eng, []config.RepositoryConfig{{ID: "DMS", DriveID: "drive1", RootPath: "SAP_DMS"}}, time.Minute, log)
+	repoCfgs := []config.RepositoryConfig{{ID: "DMS", DriveID: "drive1", RootPath: "SAP_DMS"}}
+	var seeder graphmock.Seeder = mh.(graphmock.Seeder)
+	dmsDir := t.TempDir()
+	if storagetest.Local() { // the same suite over the local backend
+		repoCfgs = []config.RepositoryConfig{{ID: "DMS", Backend: config.BackendLocal, LocalRoot: dmsDir}}
+	}
+	svc, err := storage.NewService(context.Background(), gc, eng, repoCfgs, time.Minute, log)
 	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	if storagetest.Local() {
+		seeder = storagetest.Seeder{Svc: svc, Repos: map[string]storagetest.Repo{"SAP_DMS": {ID: "DMS", Dir: dmsDir}}}
 	}
 	cfg := config.ContentServerConfig{ClockSkew: time.Minute, Repositories: []config.ContentRepositoryConfig{
 		{ContRep: "Z1", Repository: "DMS", Folder: "ContentServer/Z1", Signature: "required", Description: "signed"},
@@ -152,7 +163,7 @@ func setupCSWithLogger(t *testing.T, log *slog.Logger) *csEnv {
 	as := httptest.NewServer(mux)
 	t.Cleanup(as.Close)
 	return &csEnv{t: t, url: hs.URL + "/ContentServer/ContentServer.dll", admin: as.URL, signer: newSigner(t, "S4H"), srv: srv,
-		svc: svc, cfg: cfg, seed: mh.(graphmock.Seeder)}
+		svc: svc, cfg: cfg, seed: seeder}
 }
 
 // u builds a URL; when signed, accessMode/authId/expiration and secKey are

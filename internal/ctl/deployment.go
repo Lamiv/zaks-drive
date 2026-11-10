@@ -247,3 +247,10 @@ func backupFile(path string, now time.Time) (string, error) {
 	dst := fmt.Sprintf("%s.bak-%s", path, now.UTC().Format("20060102T150405Z"))
 	return dst, writeFileAtomic(dst, b, st.Mode().Perm()&0o644|0o600)
 }
+
+// hasState reports whether the compose file gives the server a state
+// directory (the volume that holds managed repositories).
+func (d *Deployment) hasState() bool {
+	b, err := os.ReadFile(d.ComposeFile)
+	return err == nil && bytes.Contains(b, []byte("STATE_DIR"))
+}

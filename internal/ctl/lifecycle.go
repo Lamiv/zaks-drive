@@ -82,6 +82,9 @@ func (a *App) waitReady(ctx context.Context, d *Deployment, timeout time.Duratio
 		}
 		code, body, err := a.httpGet(ctx, a.readyURL(d, "/readyz"))
 		switch {
+		case err == nil && code == http.StatusServiceUnavailable && strings.Contains(body, noRepositoryMarker):
+			a.noRepoYet = true // running, waiting for its first repository: not a failure
+			return ""
 		case err == nil && code == http.StatusOK:
 			return ""
 		case err == nil:
@@ -204,7 +207,13 @@ func (a *App) printEndpoints(d *Deployment, cfg config.Config) {
 	if host == "0.0.0.0" || host == "" {
 		host = "<this-host>"
 	}
-	a.printf("ZAKS Drive is ready.\n")
+	if a.noRepoYet {
+		a.printf("ZAKS Drive is running, but no repository is configured yet, so it cannot store documents.\n")
+		a.printf("  Add the first one:  zaks-drive repo add AD --backend local --yes     (a folder on this server)\n")
+		a.printf("  or SharePoint:      zaks-drive repo add ZH --backend sharepoint --site-url <url> --tenant-id <id> --client-id <id> --secret-file <file>\n")
+	} else {
+		a.printf("ZAKS Drive is ready.\n")
+	}
 	if cfg.Server.Enabled("rest") {
 		a.printf("  REST API            http://%s:%d/api/v1\n", host, p.REST)
 	}
@@ -212,6 +221,9 @@ func (a *App) printEndpoints(d *Deployment, cfg config.Config) {
 		a.printf("  SAP Content Server  http://%s:%d/ContentServer/ContentServer.dll\n", host, p.CS)
 	}
 	a.printf("  Health and metrics  http://127.0.0.1:%d  (localhost only)\n", p.Admin)
+	if cfg.Server.AdminUI && d.hasState() {
+		a.printf("  Admin page          http://127.0.0.1:%d/admin/ui/  (localhost only; first login: admin / admin, you will be asked to choose a new password at once)\n", p.Admin)
+	}
 }
 
 // printRecentLogs prints the last lines of sanitized logs to stderr, for failure diagnosis.
@@ -264,6 +276,10 @@ type StatusReport struct {
 	Ready      bool            `json:"ready"`
 	ReadyNote  string          `json:"readyNote,omitempty"`
 	Containers []ContainerInfo `json:"containers"`
+	// Repositories is the allowlisted view of the repositories (only when the server's admin API is usable).
+	Repositories   []RepoRow `json:"repositories,omitempty"`
+	PendingRestart bool      `json:"pendingRestart,omitempty"`
+	Fallback       bool      `json:"fallbackActive,omitempty"`
 }
 
 // ContainerInfo is the sanitized, allowlisted view of a container.
@@ -309,6 +325,9 @@ func (a *App) statusReport(ctx context.Context, d *Deployment) (StatusReport, er
 		}
 	} else {
 		r.ReadyNote = "the admin endpoint does not answer"
+	}
+	if ov := a.repoOverview(ctx, d); ov != nil {
+		r.Repositories, r.PendingRestart, r.Fallback = ov.rows(), ov.Status.PendingRestart, ov.Status.Fallback != ""
 	}
 	return r, nil
 }
@@ -361,6 +380,19 @@ func (a *App) cmdStatus(ctx context.Context, args []string) int {
 		case len(r.Containers) > 0:
 			a.printf("Ready        NO: %s\n", r.ReadyNote)
 		}
+		for _, row := range r.Repositories {
+			sap := ""
+			if row.SAP {
+				sap = ", SAP"
+			}
+			a.printf("Repository   %s: %s (%s%s), %s\n", row.ID, row.Backend, row.Source, sap, row.State)
+		}
+		if r.PendingRestart {
+			a.printf("Pending      repository changes are waiting for a restart (zaks-drive restart)\n")
+		}
+		if r.Fallback {
+			a.printf("WARNING      the server runs the LAST WORKING repository state because the current one is invalid (zaks-drive repo list)\n")
+		}
 	}
 	if len(r.Containers) == 0 || !r.Ready {
 		return ExitUnhealthy
@@ -401,3 +433,6 @@ func (a *App) cmdVersion(ctx context.Context, args []string) int {
 	}
 	return ExitOK
 }
+
+// noRepositoryMarker is part of the server's /readyz text while no repository exists yet.
+const noRepositoryMarker = "no repository is configured yet"

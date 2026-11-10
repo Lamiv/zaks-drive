@@ -56,6 +56,6 @@ docker compose -f loadtest/docker-compose.yml down -v
 
 ## Next
 
-- Use a real SharePoint: [installation](installation.md).
+- Set up a real server and follow the scenarios: [setup and usage guide](guide.md); or just the install steps: [installation](installation.md).
 - Connect SAP: [Connect SAP S/4HANA to SharePoint using ZAKS Drive](sap/connect-s4hana-to-sharepoint.md).
 - Understand the design: [architecture](architecture.md).

@@ -96,3 +96,44 @@ func TestReadOnlyRepositorySkipsWrites(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }
+
+func TestRepositoryWithOwnApplicationIsCheckedWithItsOwnToken(t *testing.T) {
+	gc, tokens, _ := newEnv(t)
+	ownGC, ownTokens, _ := newEnv(t)
+	var asked []string
+	resolve := func(rc config.RepositoryConfig) (*graph.Client, auth.TokenSource) {
+		asked = append(asked, rc.ID)
+		return ownGC, ownTokens
+	}
+	var out bytes.Buffer
+	code := Run(context.Background(), cfgFor(
+		config.RepositoryConfig{ID: "DMS", DriveID: "drive1", RootPath: "SAP_DMS"},
+		config.RepositoryConfig{ID: "ZH", DriveID: "drive1", RootPath: "SAP_ZH", ClientSecretFile: "secrets/ZH/client-secret", ClientSecret: "never-printed"},
+	), gc, tokens, &out, resolve)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	for _, want := range []string{"[PASS] Credentials configured", "[PASS] (ZH) own application: Credentials configured",
+		"[PASS] (ZH) own application: Access token from Microsoft Entra ID", "[PASS] [ZH] Write: upload a small file", "[PASS] [DMS] Write: upload a small file"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report lacks %q:\n%s", want, out.String())
+		}
+	}
+	if len(asked) != 1 || asked[0] != "ZH" {
+		t.Errorf("only the repository with its own application needs a resolver, asked for %v", asked)
+	}
+	if strings.Contains(out.String(), "never-printed") {
+		t.Fatal("a repository secret reached the report")
+	}
+}
+
+func TestLocalRepositoriesNeedNoMicrosoftAccess(t *testing.T) {
+	gc, tokens, _ := newEnv(t)
+	var out bytes.Buffer
+	if code := Run(context.Background(), cfgFor(config.RepositoryConfig{ID: "AD", Backend: config.BackendLocal}), gc, tokens, &out); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "[PASS] [AD] local repository") || strings.Contains(out.String(), "Access token") {
+		t.Fatalf("a local-only server must not be asked for Microsoft access:\n%s", out.String())
+	}
+}

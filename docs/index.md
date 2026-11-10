@@ -6,8 +6,11 @@ ZAKS Drive is an open-source content gateway that connects SAP S/4HANA and enter
 
 | I want to... | Read |
 |---|---|
+| Set it up and use it, step by step, with scenarios | [Setup and usage guide](guide.md) (install, first start, SAP, repositories, UI, backup, updates, troubleshooting) |
+| Look up a command or flag | [CLI reference](cli-reference.md) |
 | Try it in five minutes without Microsoft 365 or SAP | [Quickstart](quickstart.md) |
 | Install it on a server | [The zaks-drive command](cli.md) (installer, setup, start, doctor), [Installation](installation.md), [Configuration](configuration.md) |
+| Manage repositories (local folder or SharePoint) | [Repositories in the zaks-drive command](cli.md#repositories-several-storage-locations), [the admin UI](ui.md) |
 | Operate and troubleshoot it from the shell | [The zaks-drive command](cli.md): status, logs, doctor, update, rollback, support bundle |
 | Connect SAP S/4HANA | [Connect SAP S/4HANA to SharePoint using ZAKS Drive](sap/connect-s4hana-to-sharepoint.md) |
 | Call it from my application | [REST API guide](api/rest-api.md), [openapi.yaml](api/openapi.yaml) |

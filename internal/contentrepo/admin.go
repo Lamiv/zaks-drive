@@ -1,6 +1,7 @@
 package contentrepo
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -85,4 +86,32 @@ func adminFail(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(e.Status())
 	fmt.Fprintf(w, "%s: %s\n  fix: %s\n  more: %s\n", e.Code, firstNonEmpty(e.Detail, e.Title()), e.Fix(), e.URL())
+}
+
+// CertificateInfo is a received SAP certificate as the admin interfaces show
+// it (without the certificate bytes).
+type CertificateInfo = certRecord
+
+// CertificateList returns the certificates SAP has sent, refreshed from storage.
+func (s *Server) CertificateList(ctx context.Context) ([]CertificateInfo, error) {
+	if err := s.certs.reload(ctx, 0); err != nil {
+		return nil, err
+	}
+	list := s.certs.list()
+	for i := range list {
+		list[i].CertDER = nil
+	}
+	return list, nil
+}
+
+// SetCertificateActive activates or deactivates a received certificate.
+func (s *Server) SetCertificateActive(ctx context.Context, contRep, authID string, active bool) (*CertificateInfo, error) {
+	rec, err := s.certs.setActive(ctx, contRep, authID, active)
+	if err != nil {
+		return nil, err
+	}
+	s.log.Info("content server certificate state changed", "contRep", rec.ContRep, "authId", rec.AuthID, "active", active, "fingerprint", rec.Fingerprint)
+	out := *rec
+	out.CertDER = nil
+	return &out, nil
 }

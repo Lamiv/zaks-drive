@@ -155,6 +155,7 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`UPLOAD_BODY_INVALID`](#upload_body_invalid) | 400 | Request body could not be read |
 | [`REQUEST_BODY_INVALID`](#request_body_invalid) | 400 | Request body not valid |
 | [`THUMBNAIL_SIZE_INVALID`](#thumbnail_size_invalid) | 400 | Unknown thumbnail size |
+| [`THUMBNAIL_UNAVAILABLE`](#thumbnail_unavailable) | 404 | No thumbnail for this repository |
 
 ### `DOC_NOT_FOUND`
 
@@ -225,6 +226,13 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** `size` must be `small`, `medium` or `large`.
 - **Fix:** Use one of the three values.
+
+### `THUMBNAIL_UNAVAILABLE`
+
+**No thumbnail for this repository** (HTTP 404)
+
+- **Cause:** The repository is stored in a local folder, which does not generate thumbnails (SharePoint repositories do).
+- **Fix:** Download the document, or ask for thumbnails only on SharePoint repositories (`capabilities` in the repository list).
 
 ## SharePoint and Microsoft Graph
 
@@ -628,6 +636,12 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 | [`CFG_CONTREP_REPOSITORY_UNKNOWN`](#cfg_contrep_repository_unknown) | — | contRep points to an unknown repository |
 | [`CFG_SIGNATURE_INVALID`](#cfg_signature_invalid) | — | Unknown signature mode |
 | [`CFG_NETWORK_INVALID`](#cfg_network_invalid) | — | Invalid network in allowedNetworks |
+| [`CFG_REPO_ID_INVALID`](#cfg_repo_id_invalid) | — | Repository ID not allowed |
+| [`CFG_REPO_BACKEND_INVALID`](#cfg_repo_backend_invalid) | — | Unknown repository backend |
+| [`CFG_REPO_LOCAL_INVALID`](#cfg_repo_local_invalid) | — | Local repository settings not usable |
+| [`CFG_REPO_CREDENTIALS_INCOMPLETE`](#cfg_repo_credentials_incomplete) | — | Repository credentials incomplete |
+| [`CFG_REPO_SECRET_UNREADABLE`](#cfg_repo_secret_unreadable) | — | Repository secret file not usable |
+| [`CFG_REPO_FILE_INVALID`](#cfg_repo_file_invalid) | — | Repository definition file not usable |
 | [`STARTUP_PORT_IN_USE`](#startup_port_in_use) | — | A listen port is already in use |
 | [`STARTUP_REPOSITORY_FAILED`](#startup_repository_failed) | — | Cannot reach the configured SharePoint location |
 
@@ -771,6 +785,48 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 - **Cause:** An entry is not an IP address or CIDR (for example 10.0.0.0/24).
 - **Fix:** Fix the entry.
 
+### `CFG_REPO_ID_INVALID`
+
+**Repository ID not allowed** (HTTP —)
+
+- **Cause:** Repositories managed through `zaks-drive repo` (files in the state directory's `repos.d`) have an ID of exactly 2 characters, A-Z or 0-9, the length of an SAP content repository ID, and the file must be named `<id>.yaml`.
+- **Fix:** Rename the repository, for example `ZH` or `A1`.
+
+### `CFG_REPO_BACKEND_INVALID`
+
+**Unknown repository backend** (HTTP —)
+
+- **Cause:** `backend` must be `sharepoint` or `local`; a local repository also needs `server.stateDir`.
+- **Fix:** Fix the value, and set `server.stateDir` (STATE_DIR) for local repositories.
+
+### `CFG_REPO_LOCAL_INVALID`
+
+**Local repository settings not usable** (HTTP —)
+
+- **Cause:** `local.path` is missing, absolute, or contains `..`; or `local.versions` is outside 0 to 99. A local repository's path is relative to the data folder in the state directory.
+- **Fix:** Use a short relative folder name such as `AD`, and a `versions` number from 0 to 99 (default 5).
+
+### `CFG_REPO_CREDENTIALS_INCOMPLETE`
+
+**Repository credentials incomplete** (HTTP —)
+
+- **Cause:** A repository with its own Microsoft application needs `tenantId`, `clientId` and `clientSecretFile` together, and the other backend types take none of them.
+- **Fix:** Set all three, or none to use the global `graph.*` credentials.
+
+### `CFG_REPO_SECRET_UNREADABLE`
+
+**Repository secret file not usable** (HTTP —)
+
+- **Cause:** `clientSecretFile` must be a file below `secrets/` in the state directory, readable by the server, empty-free, and (on Linux) not accessible to group or others (mode 600).
+- **Fix:** Recreate the secret with `zaks-drive repo update <id>`, or `chmod 600` the file inside the state volume.
+
+### `CFG_REPO_FILE_INVALID`
+
+**Repository definition file not usable** (HTTP —)
+
+- **Cause:** A file in the state directory's `repos.d` is not valid YAML, has an unknown setting, is too large, or is not named after its repository ID.
+- **Fix:** Fix the file named in the detail, or remove it. The server keeps the last working state when a change fails to load.
+
 ### `STARTUP_PORT_IN_USE`
 
 **A listen port is already in use** (HTTP —)
@@ -791,6 +847,21 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 |---|---|---|
 | [`CLI_ADMIN_UNREACHABLE`](#cli_admin_unreachable) | — | Cannot reach the adapter's admin endpoint |
 | [`CLI_ADMIN_ROUTE_MISSING`](#cli_admin_route_missing) | — | Certificate administration is not available |
+| [`ADMIN_TOKEN_REQUIRED`](#admin_token_required) | 503 | Repository administration needs an ADMIN_TOKEN |
+| [`ADMIN_STATE_UNAVAILABLE`](#admin_state_unavailable) | 503 | No state directory |
+| [`ADMIN_REPO_NOT_FOUND`](#admin_repo_not_found) | 404 | No such managed repository |
+| [`ADMIN_REPO_EXISTS`](#admin_repo_exists) | 409 | Repository already exists |
+| [`ADMIN_REPO_STATIC`](#admin_repo_static) | 409 | Repository comes from config.yaml |
+| [`ADMIN_REPO_IN_USE`](#admin_repo_in_use) | 409 | Repository is exposed to SAP |
+| [`ADMIN_REPO_INVALID`](#admin_repo_invalid) | 400 | Repository settings rejected |
+| [`ADMIN_CSRF_INVALID`](#admin_csrf_invalid) | 403 | Request not accepted from this page |
+| [`ADMIN_PASSWORD_CHANGE_REQUIRED`](#admin_password_change_required) | 403 | Set a new admin password first |
+| [`ADMIN_PASSWORD_REJECTED`](#admin_password_rejected) | 400 | The new password is not accepted |
+| [`ADMIN_ACCOUNT_LOCKED`](#admin_account_locked) | 423 | The admin account record is unreadable |
+| [`ADMIN_APPLY_BUSY`](#admin_apply_busy) | 409 | A restart is already in progress |
+| [`ADMIN_PURGE_UNSUPPORTED`](#admin_purge_unsupported) | 409 | Only detached local repositories can be purged |
+| [`ADMIN_PURGE_ATTACHED`](#admin_purge_attached) | 409 | The repository is still in use |
+| [`ADMIN_PURGE_CHALLENGE`](#admin_purge_challenge) | 400 | Purge confirmation does not match |
 | [`CERT_NOT_RECEIVED`](#cert_not_received) | 400 | No certificate from SAP for this repository |
 | [`CERT_REQUEST_INVALID`](#cert_request_invalid) | 400 | Admin request body not valid |
 
@@ -807,6 +878,111 @@ HTTP status `—` means the error is not sent over HTTP (start-up and command-li
 
 - **Cause:** The admin endpoint answered 404: the `contentrepo` interface is not enabled, or the adapter is still starting.
 - **Fix:** Enable `contentrepo` in `server.interfaces`, wait for /readyz, and retry.
+
+### `ADMIN_TOKEN_REQUIRED`
+
+**Repository administration needs an ADMIN_TOKEN** (HTTP 503)
+
+- **Cause:** Changing repositories writes secrets, so the admin API refuses to work without an `ADMIN_TOKEN` (the certificate endpoints only check it when set).
+- **Fix:** Set ADMIN_TOKEN in deploy/.env to a long random value and recreate the container.
+
+### `ADMIN_STATE_UNAVAILABLE`
+
+**No state directory** (HTTP 503)
+
+- **Cause:** Managed repositories live in the state directory (`server.stateDir`, STATE_DIR), which is not configured or cannot be written.
+- **Fix:** Use the supplied compose file, which mounts the `state` volume at /var/lib/zaks-drive and sets STATE_DIR, or set `server.stateDir`.
+
+### `ADMIN_REPO_NOT_FOUND`
+
+**No such managed repository** (HTTP 404)
+
+- **Cause:** There is no repository with that ID in the state directory.
+- **Fix:** `zaks-drive repo list` shows the repositories.
+
+### `ADMIN_REPO_EXISTS`
+
+**Repository already exists** (HTTP 409)
+
+- **Cause:** A repository with that ID exists, in config.yaml or as a managed repository.
+- **Fix:** Choose another ID, or update the existing repository.
+
+### `ADMIN_REPO_STATIC`
+
+**Repository comes from config.yaml** (HTTP 409)
+
+- **Cause:** Repositories defined in config.yaml are read-only for the management tools.
+- **Fix:** Edit config.yaml and recreate the container, or move the repository into the managed set.
+
+### `ADMIN_REPO_IN_USE`
+
+**Repository is exposed to SAP** (HTTP 409)
+
+- **Cause:** The repository has an `sap` block, so SAP may still hold references to documents stored in it. Detaching it makes them unreachable.
+- **Fix:** Remove it from SAP first, or repeat the command with the explicit `allowInUse` confirmation.
+
+### `ADMIN_REPO_INVALID`
+
+**Repository settings rejected** (HTTP 400)
+
+- **Cause:** The settings do not pass the server's own validation; nothing was changed. The detail names each problem.
+- **Fix:** Correct the settings named and retry.
+
+### `ADMIN_CSRF_INVALID`
+
+**Request not accepted from this page** (HTTP 403)
+
+- **Cause:** A change made with a browser session must come from the admin page itself: it needs the session's CSRF token and an Origin that names this server.
+- **Fix:** Reload the admin page and try again. Scripts should use the Bearer ADMIN_TOKEN instead of a cookie.
+
+### `ADMIN_PASSWORD_CHANGE_REQUIRED`
+
+**Set a new admin password first** (HTTP 403)
+
+- **Cause:** The session was opened with the default (or reset) password admin/admin, which may only be used to choose a new password.
+- **Fix:** Choose a new password in the admin page (at least 12 characters), then continue.
+
+### `ADMIN_PASSWORD_REJECTED`
+
+**The new password is not accepted** (HTTP 400)
+
+- **Cause:** The new password is too short (minimum 12 characters), too easy to guess, the same as the current one, or contains characters that are not allowed.
+- **Fix:** Use a longer password; a few unrelated words make a good passphrase.
+
+### `ADMIN_ACCOUNT_LOCKED`
+
+**The admin account record is unreadable** (HTTP 423)
+
+- **Cause:** admin.json in the state directory exists but cannot be read, so nobody can log in (the server never falls back to the default password).
+- **Fix:** Reset the account: `zaks-drive admin reset-password`, or create an empty file named NO_ADMIN in the state volume and restart the server.
+
+### `ADMIN_APPLY_BUSY`
+
+**A restart is already in progress** (HTTP 409)
+
+- **Cause:** The server is already draining requests for a restart.
+- **Fix:** Wait for it to finish, or cancel it first.
+
+### `ADMIN_PURGE_UNSUPPORTED`
+
+**Only detached local repositories can be purged** (HTTP 409)
+
+- **Cause:** A purge deletes the documents of a repository that was detached and stores its documents in a local folder. SharePoint content is never deleted by ZAKS Drive.
+- **Fix:** Detach the repository first (`zaks-drive repo remove`). For SharePoint, delete the folder in SharePoint itself; its recycle bin gives a recovery window.
+
+### `ADMIN_PURGE_ATTACHED`
+
+**The repository is still in use** (HTTP 409)
+
+- **Cause:** The repository, or another one using the same folder, is still defined, so the server may be serving the documents.
+- **Fix:** Detach it with `zaks-drive repo remove`, restart the server, and run the purge again.
+
+### `ADMIN_PURGE_CHALLENGE`
+
+**Purge confirmation does not match** (HTTP 400)
+
+- **Cause:** The typed repository ID or the challenge phrase is wrong, expired (valid 15 minutes), belongs to another repository, or the folder changed after the plan was made.
+- **Fix:** Run `zaks-drive repo purge <id> --plan` again and use the new phrase.
 
 ### `CERT_NOT_RECEIVED`
 

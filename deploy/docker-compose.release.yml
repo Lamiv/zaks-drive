@@ -9,10 +9,12 @@ services:
     env_file: .env
     environment:
       CONFIG_FILE: /etc/adapter/config.yaml
+      STATE_DIR: /var/lib/zaks-drive                # repository definitions, secrets and local documents
     volumes:
       - ./config.yaml:/etc/adapter/config.yaml:ro
       - ./tls:/etc/adapter/tls:ro                  # optional: tls.crt and tls.key when ZAKS Drive terminates TLS
       - spool:/var/spool/adapter                   # disk-backed spool (not RAM)
+      - state:/var/lib/zaks-drive                  # managed repositories: definitions, secrets, local documents (back this up)
     ports:
       # Host ports and the bind address are set in .env. Container ports stay fixed.
       - "${BIND_ADDRESS:-0.0.0.0}:${REST_PORT:-8080}:8080"   # Document REST API
@@ -36,3 +38,4 @@ services:
 
 volumes:
   spool:
+  state:

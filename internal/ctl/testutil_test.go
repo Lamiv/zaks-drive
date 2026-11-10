@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -32,6 +33,8 @@ type call struct {
 	Args []string
 	Dir  string
 	Env  []string
+	// Stdin is what the process was given on standard input.
+	Stdin string
 }
 
 func (c call) String() string { return c.Name + " " + strings.Join(c.Args, " ") }
@@ -45,6 +48,10 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(_ context.Context, name string, args []string, opts RunOpts) (Result, error) {
 	c := call{Name: name, Args: args, Dir: opts.Dir, Env: opts.Env}
+	if opts.Stdin != nil {
+		b, _ := io.ReadAll(opts.Stdin)
+		c.Stdin = string(b)
+	}
 	f.mu.Lock()
 	f.calls = append(f.calls, c)
 	f.mu.Unlock()
@@ -153,6 +160,8 @@ type env struct {
 	certs      string
 	certStatus int
 	fake       dockerFake
+	// repoAPI, when set, answers /admin/api/v1/... on the fake admin endpoint (after the bearer token is checked).
+	repoAPI http.Handler
 }
 
 // newEnv creates a test App, a valid release-mode deployment in a temp dir, a fake admin endpoint
@@ -162,6 +171,14 @@ func newEnv(t *testing.T) *env {
 	e := &env{out: &bytes.Buffer{}, err: &bytes.Buffer{}, run: &fakeRunner{}, dir: t.TempDir(), readyStatus: 200, readyBody: "ready",
 		csStatus: 200, csBody: "serverStatus=\"running\";pVersion=\"0047\";\ncontRep=\"Z1\";contRepStatus=\"running\";\n", certStatus: 200, certs: `{"value":[]}`}
 	e.admin = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/admin/api/v1/") && e.repoAPI != nil {
+			if r.Header.Get("Authorization") != "Bearer "+secAdmin {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			e.repoAPI.ServeHTTP(w, r)
+			return
+		}
 		switch r.URL.Path {
 		case "/readyz":
 			w.WriteHeader(e.readyStatus)

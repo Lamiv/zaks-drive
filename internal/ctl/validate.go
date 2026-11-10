@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -37,6 +38,12 @@ func loadConfig(d *Deployment) (config.Config, error) {
 			}
 		}
 	}()
+	// Managed repositories live in the server's state volume, which this host cannot
+	// read. Pointing STATE_DIR at a folder that does not exist tells the loader that
+	// repositories may also come from there, without reading anything.
+	if d.hasState() {
+		_ = os.Setenv("STATE_DIR", filepath.Join(os.TempDir(), "zaks-drive-state-is-in-the-container"))
+	}
 	for k, v := range env {
 		_ = os.Setenv(k, v)
 	}

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/Lamiv/zaks-drive/internal/storage/storagetest"
 )
 
 type problemBody struct {
@@ -55,6 +57,9 @@ func TestErrorsCarryCodeDetailAndHint(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if c.name == "path too long" && storagetest.Local() {
+				t.Skip("the 400-character path limit is SharePoint's; a local repository only limits each name to 255 bytes")
+			}
 			hdr := c.hdr
 			resp := e.do(t, c.method, c.path, c.key, strings.NewReader(c.body), hdr)
 			if resp.StatusCode != c.status {

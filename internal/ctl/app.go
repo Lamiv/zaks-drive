@@ -68,6 +68,8 @@ type App struct {
 	PortBusy func(host string, port int) bool
 
 	inReader *bufio.Reader
+	// noRepoYet is set when the server answers "not ready" only because no repository exists yet.
+	noRepoYet bool
 }
 
 // NewApp returns an App wired to the real process environment.
@@ -106,6 +108,8 @@ func (a *App) commands() []command {
 		{"logs", "show sanitized logs (--follow, --tail N, --since 1h, --level, --iface)", (*App).cmdLogs},
 		{"doctor", "diagnose the installation (--json, --connectivity)", (*App).cmdDoctor},
 		{"check", "test every SharePoint access the server needs (contacts Microsoft)", (*App).cmdCheck},
+		{"admin", "admin reset-password: return the admin UI login to admin/admin (to be changed at once)", (*App).cmdAdmin},
+		{"repo", "repo list|show|add|update|remove|check|purge: manage repositories (local folder or SharePoint)", (*App).cmdRepo},
 		{"update", "update to a verified release (--check, --version, --yes)", (*App).cmdUpdate},
 		{"rollback", "return to the previously installed version", (*App).cmdRollback},
 		{"support", "support bundle: collect sanitized diagnostics for a bug report", (*App).cmdSupport},

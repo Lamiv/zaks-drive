@@ -4,7 +4,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/Lamiv/zaks-drive/internal/graph"
 	"github.com/Lamiv/zaks-drive/internal/storage"
 )
 
@@ -40,8 +39,8 @@ type Links struct {
 	Thumbnail string `json:"thumbnail,omitempty"`
 }
 
-func toDocument(repo *storage.Repository, it *graph.DriveItem) Document {
-	rel, _ := repo.Rel(it.Path())
+func toDocument(repo *storage.Repository, it *storage.Item) Document {
+	rel := it.Path
 	base := prefix + "/repositories/" + url.PathEscape(repo.ID) + "/documents/" + url.PathEscape(it.ID)
 	d := Document{
 		ID:         it.ID,
@@ -51,24 +50,24 @@ func toDocument(repo *storage.Repository, it *graph.DriveItem) Document {
 		Size:       it.Size,
 		ETag:       it.ETag,
 		ContentTag: it.CTag,
-		CreatedAt:  it.CreatedDateTime,
-		ModifiedAt: it.LastModifiedDateTime,
-		CreatedBy:  it.CreatedBy.Name(),
-		ModifiedBy: it.LastModifiedBy.Name(),
+		CreatedAt:  it.Created,
+		ModifiedAt: it.Modified,
+		CreatedBy:  it.CreatedBy,
+		ModifiedBy: it.ModifiedBy,
 		WebURL:     it.WebURL,
 		Links:      Links{Self: base},
 	}
-	if it.Folder != nil {
+	if it.Folder {
 		d.IsFolder = true
-		n := it.Folder.ChildCount
+		n := it.ChildCount
 		d.ChildCount = &n
 	}
-	if it.File != nil {
-		d.MimeType = it.File.MimeType
+	if it.File {
+		d.MimeType = it.MimeType
 		d.Links.Content = base + "/content"
 		d.Links.Thumbnail = base + "/thumbnail"
-		if h := it.File.Hashes; h != nil {
-			d.Hashes = &Hashes{QuickXor: h.QuickXorHash, SHA256: h.SHA256Hash}
+		if it.QuickXorHash != "" || it.SHA256Hash != "" {
+			d.Hashes = &Hashes{QuickXor: it.QuickXorHash, SHA256: it.SHA256Hash}
 		}
 	}
 	return d

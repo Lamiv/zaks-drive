@@ -69,6 +69,10 @@ var Diagnostics = []DiagInfo{
 		Warn: "A key is shorter than 32 characters, or authentication is disabled."},
 	{ID: "repository-mapping", Title: "Repository mappings", How: "Checks that every SAP content repository maps to a configured repository and reviews risky settings.",
 		Fail: "A content repository maps to a repository that does not exist.", Warn: "Signature mode none, or no allowedNetworks while the SAP interface is enabled."},
+	{ID: "repositories", Title: "Managed repositories", How: "Asks the server's admin API (ADMIN_TOKEN from .env, localhost only) whether repository changes wait for a restart, whether the server fell back to the last working state, and whether every repository is served.",
+		Fail: "The server fell back to the last working repository state because the current one is invalid.", Warn: "Changes are pending a restart, or a repository is defined but not served."},
+	{ID: "admin-password", Title: "Admin UI password", How: "Asks the server's admin API whether the admin web page still accepts the default login admin/admin (before the first login has chosen a password).",
+		Warn: "The default password is still active."},
 	{ID: "container-state", Title: "Container state and restarts", How: "Asks `docker compose ps` (only this deployment's containers) and `docker inspect` for restart counts.",
 		Fail: "The container is stopped, unhealthy, or restarted three or more times.", Warn: "Not started yet, or restarted once or twice, or health is still starting."},
 	{ID: "container-resources", Title: "Memory limit and OOM kills", How: "Reads `docker inspect` State.OOMKilled and the memory limit of the running container.",
@@ -129,6 +133,8 @@ type diagRun struct {
 	containers []Container
 	running    bool
 	ports      Ports
+	ov         *repoOverview
+	ovDone     bool
 }
 
 func (r *diagRun) add(id string, st Status, detail, fix string) {
@@ -147,6 +153,8 @@ func (a *App) runDoctor(ctx context.Context, d *Deployment, opts DoctorOpts) Doc
 	r.checkConfig()
 	r.checkKeys()
 	r.checkMappings()
+	r.checkRepositories()
+	r.checkAdminPassword()
 	r.checkContainer()
 	r.checkResources()
 	r.checkPorts()
@@ -485,8 +493,10 @@ func (r *diagRun) checkReadiness() {
 	switch {
 	case err != nil:
 		r.add("readiness", StatusFail, "the admin endpoint does not answer", "run: zaks-drive logs --tail 50")
+	case code == http.StatusServiceUnavailable && strings.Contains(body, noRepositoryMarker):
+		r.add("readiness", StatusWarn, "the server is running but no repository is configured yet", "add one: zaks-drive repo add AD --backend local --yes (or --backend sharepoint ...)")
 	case code == http.StatusOK:
-		r.add("readiness", StatusPass, "ready: the server reached SharePoint with its credentials", "")
+		r.add("readiness", StatusPass, "ready: every repository is reachable", "")
 	default:
 		cat, fix := classifyReadiness(body)
 		r.add("readiness", StatusFail, cat+" ("+oneLine(body)+")", fix)
@@ -782,4 +792,56 @@ func lastMeaningfulLines(s string, n int) string {
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
+}
+
+func (r *diagRun) checkRepositories() {
+	if !r.dockerOK {
+		r.add("repositories", StatusSkipped, "Docker is not usable (see docker-daemon)", "")
+		return
+	}
+	ov := r.overview()
+	if ov == nil {
+		r.add("repositories", StatusSkipped, "the server is not running or its admin API is not usable (ADMIN_TOKEN in .env); use: zaks-drive repo list", "")
+		return
+	}
+	serving := map[string]bool{}
+	for _, id := range ov.Status.Serving {
+		serving[id] = true
+	}
+	var notServed []string
+	for _, v := range ov.Views {
+		if !serving[v.ID] {
+			notServed = append(notServed, v.ID)
+		}
+	}
+	switch {
+	case ov.Status.Fallback != "":
+		r.add("repositories", StatusFail, "the server runs the last working repository state because the current one is invalid: "+oneLine(ov.Status.Fallback), "run: zaks-drive repo list, correct the repository named, then restart")
+	case ov.Status.PendingRestart:
+		r.add("repositories", StatusWarn, "repository changes are waiting for a restart", "apply them with: zaks-drive restart")
+	case len(notServed) > 0:
+		r.add("repositories", StatusWarn, "defined but not served: "+strings.Join(notServed, ", "), "restart: zaks-drive restart")
+	default:
+		r.add("repositories", StatusPass, fmt.Sprintf("%d %s, all served", len(ov.Views), plural(len(ov.Views), "repository", "repositories")), "")
+	}
+}
+
+// overview asks the server's admin API once per run.
+func (r *diagRun) overview() *repoOverview {
+	if !r.ovDone {
+		r.ov, r.ovDone = r.a.repoOverview(r.ctx, r.d), true
+	}
+	return r.ov
+}
+
+func (r *diagRun) checkAdminPassword() {
+	ov := r.overview()
+	switch {
+	case ov == nil:
+		r.add("admin-password", StatusSkipped, "the server is not running or its admin API is not usable (ADMIN_TOKEN in .env)", "")
+	case ov.Status.AdminPasswordDefault:
+		r.add("admin-password", StatusWarn, "the admin web page still accepts the default login admin / admin", "open the admin page and choose a password at the first login, or turn the page off with server.adminUI: false")
+	default:
+		r.add("admin-password", StatusPass, "the default admin password has been changed", "")
+	}
 }

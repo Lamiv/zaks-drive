@@ -341,3 +341,15 @@ func (e *Engine) tooLarge(size int64) error {
 }
 
 func init() { safelog.Allow(ErrTooLarge) }
+
+// MaxUpload is the largest accepted upload in bytes (transfer.maxUploadBytes).
+func (e *Engine) MaxUpload() int64 { return e.opts.MaxUpload }
+
+// WithClient returns an engine that uses g for Graph calls but shares this
+// engine's memory budget and buffer pools, so repositories with their own
+// Microsoft credentials still draw on one transfer memory ceiling.
+func (e *Engine) WithClient(g *graph.Client) *Engine {
+	cp := *e
+	cp.g = g
+	return &cp
+}

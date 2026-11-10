@@ -3,6 +3,7 @@ package ctl
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -198,6 +199,7 @@ func TestSetupInteractiveWithScriptedAnswers(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "zd")
 	answers := strings.Join([]string{
 		target,                              // deployment directory
+		"sharepoint",                        // where documents are stored first
 		"127.0.0.1", "8181", "8191", "9191", // bind, rest, cs, admin
 		guidA, guidB, // tenant, client (the secret comes from ReadSecret)
 		"https://contoso.sharepoint.com/sites/SAP_DOCS", "Documents", "SAP_DMS",
@@ -329,5 +331,136 @@ func TestImageBuildCarriesTheReleaseRevisionOnlyWhenItIsAValidCommit(t *testing.
 		if e.run.has("--privileged") {
 			t.Errorf("%s: unvalidated text reached a docker argument", name)
 		}
+	}
+}
+
+// ---- local-first setup: no Microsoft account needed ----
+
+func TestSetupLocalFirstNeedsNoMicrosoftAccount(t *testing.T) {
+	e, target, _ := setupEnv(t)
+	rc := e.main("setup", "--non-interactive", "--no-build", "--storage", "local", "--dir", target)
+	if rc != ExitOK {
+		t.Fatalf("exit %d\n%s", rc, e.both())
+	}
+	envMap, err := ReadEnv(filepath.Join(target, ".env"))
+	must(t, err)
+	for _, k := range []string{"GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET"} {
+		if v, ok := envMap[k]; !ok || v != "" {
+			t.Errorf("%s must be present and empty in a local-first deployment, got %q", k, v)
+		}
+	}
+	if _, ok := envMap["SHAREPOINT_SITE_URL"]; ok {
+		t.Error("no SharePoint location belongs in a local-first .env")
+	}
+	for _, k := range []string{"ADAPTER_API_KEY_S4", "ADAPTER_API_KEY_FIORI", "ADMIN_TOKEN"} {
+		if len(envMap[k]) < 32 {
+			t.Errorf("%s must still be generated", k)
+		}
+	}
+	cfg, err := loadConfig(newDeployment(target))
+	if err != nil {
+		t.Fatalf("the generated configuration must load: %v", err)
+	}
+	if len(cfg.Repositories) != 0 || len(cfg.ContentServer.Repositories) != 0 || !reflect.DeepEqual(cfg.Server.Interfaces, []string{"rest"}) {
+		t.Fatalf("repositories=%v sap=%v interfaces=%v", cfg.Repositories, cfg.ContentServer.Repositories, cfg.Server.Interfaces)
+	}
+	for _, k := range cfg.Auth.APIKeys {
+		for _, r := range k.Repositories {
+			if r == "DMS" {
+				t.Errorf("key %s is still tied to a repository that does not exist", k.Name)
+			}
+		}
+	}
+	out := e.out.String()
+	for _, want := range []string{"Storage        local folder", "zaks-drive repo add AD --backend local", "no Microsoft account needed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Tenant") || strings.Contains(out, "zaks-drive check") {
+		t.Errorf("a local-first summary must not talk about Microsoft:\n%s", out)
+	}
+	if info, err := os.Stat(filepath.Join(target, ".env")); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf(".env must still be mode 600")
+	}
+}
+
+func TestSetupLocalFirstWithSAPInterfaceIsValid(t *testing.T) {
+	e, target, _ := setupEnv(t)
+	if rc := e.main("setup", "--non-interactive", "--no-build", "--storage", "local", "--interfaces", "rest,contentrepo", "--allowed-network", "10.0.0.0/8", "--dir", target); rc != ExitOK {
+		t.Fatalf("exit %d\n%s", rc, e.both())
+	}
+	cfg, err := loadConfig(newDeployment(target))
+	if err != nil || !cfg.Server.Enabled("contentrepo") || len(cfg.ContentServer.AllowedNetworks) != 1 {
+		t.Fatalf("%v %+v", err, cfg.ContentServer)
+	}
+}
+
+func TestSetupLocalRefusesMicrosoftOptionsAndUnknownStorage(t *testing.T) {
+	e, target, secretFile := setupEnv(t)
+	for _, extra := range [][]string{{"--site-url", "https://x.sharepoint.com/sites/a"}, {"--tenant-id", guidA}, {"--client-secret-file", secretFile}, {"--library", "Docs"}, {"--root-path", "X"}} {
+		args := append([]string{"setup", "--non-interactive", "--no-build", "--storage", "local", "--dir", target}, extra...)
+		if rc := e.main(args...); rc != ExitUsage || !strings.Contains(e.err.String(), "do not apply with --storage local") {
+			t.Errorf("%v: exit %d\n%s", extra, rc, e.err.String())
+		}
+	}
+	if rc := e.main("setup", "--non-interactive", "--no-build", "--storage", "nas", "--dir", target); rc != ExitUsage || !strings.Contains(e.err.String(), "use local or sharepoint") {
+		t.Errorf("unknown storage: %d\n%s", rc, e.err.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, ".env")); err == nil {
+		t.Fatal("a refused setup wrote files")
+	}
+}
+
+func TestSetupWithoutAStorageChoiceStillRequiresSharePointWhenNotInteractive(t *testing.T) {
+	e, target, _ := setupEnv(t)
+	if rc := e.main("setup", "--non-interactive", "--no-build", "--dir", target); rc != ExitUsage || !strings.Contains(e.err.String(), "--site-url") {
+		t.Fatalf("the default is unchanged for scripts: %d\n%s", rc, e.err.String())
+	}
+}
+
+func TestSetupInteractiveLocalAsksNothingAboutMicrosoft(t *testing.T) {
+	e := newEnv(t)
+	target := filepath.Join(t.TempDir(), "zd")
+	e.app.In = strings.NewReader(strings.Join([]string{target, "", "127.0.0.1", "8181", "8191", "9191", "n", "n", "info"}, "\n") + "\n") // dir, storage (Enter = local), ports, SAP no, TLS no, log level
+	e.app.Interactive = func() bool { return true }
+	asked := false
+	e.app.ReadSecret = func(string) (string, error) { asked = true; return "", nil }
+	if rc := e.main("setup", "--no-build"); rc != ExitOK {
+		t.Fatalf("exit %d\n%s", rc, e.both())
+	}
+	if asked || strings.Contains(e.out.String(), "Directory (tenant) ID") || !strings.Contains(e.out.String(), "Storage [local]") {
+		t.Fatalf("with nothing Microsoft known the default is local and no Microsoft question is asked:\n%s", e.out.String())
+	}
+	if cfg, err := loadConfig(newDeployment(target)); err != nil || len(cfg.Repositories) != 0 {
+		t.Fatalf("%v", err)
+	}
+}
+
+// A server that has no repository yet is running, not broken: start, status and doctor say so.
+func TestStartAndDoctorTreatAMissingFirstRepositoryAsANormalState(t *testing.T) {
+	e := newEnv(t)
+	e.readyStatus = 503
+	e.readyBody = "not ready: no repository is configured yet; add one with `zaks-drive repo add`"
+	if rc := e.main("start", "--dir", e.dir, "--timeout", "5s"); rc != ExitOK {
+		t.Fatalf("start must succeed: %d\n%s", rc, e.both())
+	}
+	for _, want := range []string{"running, but no repository is configured yet", "zaks-drive repo add AD --backend local --yes", "--backend sharepoint"} {
+		if !strings.Contains(e.out.String(), want) {
+			t.Errorf("start output lacks %q:\n%s", want, e.out.String())
+		}
+	}
+	if strings.Contains(e.out.String(), "ZAKS Drive is ready.") {
+		t.Error("it must not claim to be ready")
+	}
+	f, _ := e.doctor(t)
+	wantStatus(t, f, "readiness", StatusWarn)
+	if !strings.Contains(f["readiness"].Fix, "zaks-drive repo add") {
+		t.Errorf("the fix must name the command: %s", f["readiness"].Fix)
+	}
+	// any other 503 is still a failure
+	e.readyBody = "not ready: repository check failed: Microsoft rejected the credentials"
+	if rc := e.main("start", "--dir", e.dir, "--timeout", "1s"); rc != ExitUnhealthy {
+		t.Fatalf("a real failure must stay a failure: %d", rc)
 	}
 }

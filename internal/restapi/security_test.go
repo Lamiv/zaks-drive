@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Lamiv/zaks-drive/internal/restapi"
+	"github.com/Lamiv/zaks-drive/internal/storage/storagetest"
 )
 
 // Regression: paging cursors used to be a base64 Graph URL checked only for
@@ -39,6 +40,9 @@ func TestCursorCannotBeForgedOrReused(t *testing.T) {
 	// Forged cursor pointing at a folder outside the repository.
 	link, _ := base64.RawURLEncoding.DecodeString(strings.SplitN(page.NextCursor, ".", 2)[0])
 	evil := strings.Replace(string(link), "SAP/DMS/f1", "HR", 1)
+	if storagetest.Local() {
+		evil = "999" // a local cursor is a paging offset, not a link
+	}
 	forged := base64.RawURLEncoding.EncodeToString([]byte(evil))
 	for _, c := range []string{forged, forged + "." + strings.SplitN(page.NextCursor, ".", 2)[1], forged + ".AAAA"} {
 		resp := e.do(t, "GET", "/repositories/DMS/children?path=f1&cursor="+c, "ro-key", nil, nil)

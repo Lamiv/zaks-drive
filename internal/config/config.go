@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -35,6 +36,12 @@ type Config struct {
 	// environment variable is empty or unset; used to explain validation
 	// errors ("SHAREPOINT_SITE_URL is empty") instead of a bare "missing".
 	emptyRefs map[string]bool
+	// repoErrs are problems found while reading the state directory; Validate reports them.
+	repoErrs []error
+	// Fallback is set when the repository definitions in the state directory
+	// did not validate and the last state that started is served instead; it
+	// holds the reason.
+	Fallback string
 }
 
 type ContentServerConfig struct {
@@ -70,13 +77,22 @@ type ServerConfig struct {
 	ReadHeaderTO    time.Duration `yaml:"readHeaderTimeout"`
 	IdleTimeout     time.Duration `yaml:"idleTimeout"`
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
-	CORSOrigins     []string      `yaml:"corsOrigins"`
-	TLSCertFile     string        `yaml:"tlsCertFile"`
-	TLSKeyFile      string        `yaml:"tlsKeyFile"`
-	EnablePprof     bool          `yaml:"enablePprof"`
+	// DrainTimeout bounds how long a restart for a repository change waits for
+	// running requests (maintenance mode refuses new ones meanwhile).
+	DrainTimeout time.Duration `yaml:"drainTimeout"`
+	// AdminUI serves the admin web UI on the admin listener. Login is the user
+	// admin with a password chosen at the first login (it needs StateDir). Default true.
+	AdminUI     bool     `yaml:"adminUI"`
+	CORSOrigins []string `yaml:"corsOrigins"`
+	TLSCertFile string   `yaml:"tlsCertFile"`
+	TLSKeyFile  string   `yaml:"tlsKeyFile"`
+	EnablePprof bool     `yaml:"enablePprof"`
 	// AdminToken, when set, is required (Bearer) for mutating admin
 	// endpoints such as certificate activation.
 	AdminToken string `yaml:"adminToken"`
+	// StateDir holds repository definitions (repos.d), their secrets and the
+	// data of local repositories. Empty disables managed repositories.
+	StateDir string `yaml:"stateDir"`
 }
 
 type GraphConfig struct {
@@ -153,6 +169,41 @@ type RepositoryConfig struct {
 	DriveName string `yaml:"driveName"`
 	RootPath  string `yaml:"rootPath"`
 	ReadOnly  bool   `yaml:"readOnly"`
+
+	Description string `yaml:"description"`
+	// Backend is "sharepoint" (default) or "local".
+	Backend string `yaml:"backend"`
+	// Local holds the settings of a local-folder repository.
+	Local LocalConfig `yaml:"local"`
+	// TenantID, ClientID and ClientSecretFile name an own Microsoft
+	// application for this repository. Omitted: the global graph.* values.
+	// The secret is read from a file below secrets/ in the state directory.
+	TenantID         string `yaml:"tenantId"`
+	ClientID         string `yaml:"clientId"`
+	ClientSecretFile string `yaml:"clientSecretFile"`
+	// SAP exposes the repository as an SAP content repository.
+	SAP *RepositorySAPConfig `yaml:"sap"`
+
+	// Filled in by the loader, never read from YAML.
+	Source       string `yaml:"-"` // "static" (config.yaml) or "managed" (repos.d)
+	LocalRoot    string `yaml:"-"` // absolute folder of a local repository
+	ClientSecret string `yaml:"-"` // content of ClientSecretFile
+}
+
+// LocalConfig configures a repository stored in a folder on the server.
+type LocalConfig struct {
+	// Path is relative to the data folder of the state directory.
+	Path string `yaml:"path"`
+	// Versions is how many previous versions are kept per file (0 to 99,
+	// default 5; 0 keeps none).
+	Versions *int `yaml:"versions"`
+}
+
+// RepositorySAPConfig is the SAP content repository side of a repository.
+type RepositorySAPConfig struct {
+	// ContRep defaults to the repository ID.
+	ContRep   string `yaml:"contRep"`
+	Signature string `yaml:"signature"`
 }
 
 type LogConfig struct {
@@ -171,6 +222,8 @@ func Default() Config {
 			ReadHeaderTO:    10 * time.Second,
 			IdleTimeout:     120 * time.Second,
 			ShutdownTimeout: 30 * time.Second,
+			DrainTimeout:    30 * time.Second,
+			AdminUI:         true,
 		},
 		Graph: GraphConfig{
 			AuthorityURL:     "https://login.microsoftonline.com",
@@ -198,6 +251,24 @@ var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Load reads the YAML file at path (optional; "" skips) and applies env overrides.
 func Load(path string) (Config, error) {
+	cfg, err := load(path, ReposDir)
+	if err == nil || cfg.Server.StateDir == "" {
+		return cfg, err
+	}
+	// A changed repository definition that no longer validates must not take
+	// the server down: fall back to the definitions of the last state that
+	// started, and say so. Only when that snapshot exists and itself loads.
+	lastGood := LastGoodDir + "/" + ReposDir
+	if st, serr := os.Stat(filepath.Join(cfg.Server.StateDir, filepath.FromSlash(lastGood))); serr == nil && st.IsDir() {
+		if fb, ferr := load(path, lastGood); ferr == nil {
+			fb.Fallback = strings.TrimSpace(apperr.Format(err))
+			return fb, nil
+		}
+	}
+	return cfg, err
+}
+
+func load(path, reposDir string) (Config, error) {
 	cfg := Default()
 	if path != "" {
 		raw, err := os.ReadFile(path)
@@ -222,7 +293,11 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyEnv(&cfg)
+	cfg.loadManaged(reposDir)
 	normalize(&cfg)
+	for i := range cfg.Repositories {
+		cfg.repoErrs = append(cfg.repoErrs, cfg.resolveRepository(&cfg.Repositories[i])...)
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -233,6 +308,7 @@ func applyEnv(c *Config) {
 		}
 	}
 	str("ADMIN_TOKEN", &c.Server.AdminToken)
+	str("STATE_DIR", &c.Server.StateDir)
 	str("GRAPH_TENANT_ID", &c.Graph.TenantID)
 	str("GRAPH_CLIENT_ID", &c.Graph.ClientID)
 	str("GRAPH_CLIENT_SECRET", &c.Graph.ClientSecret)
@@ -273,6 +349,16 @@ func normalize(c *Config) {
 	if c.ContentServer.ClockSkew == 0 {
 		c.ContentServer.ClockSkew = 5 * time.Minute
 	}
+	for i := range c.Repositories {
+		r := &c.Repositories[i]
+		if r.Backend == "" {
+			r.Backend = BackendSharePoint
+		}
+		if r.Source == "" {
+			r.Source = SourceStatic
+		}
+	}
+	c.expandSAP()
 	for i := range c.ContentServer.Repositories {
 		r := &c.ContentServer.Repositories[i]
 		if r.Folder == "" {
@@ -325,6 +411,8 @@ func (c Config) Validate() error {
 	var errs []error
 	add := func(e *apperr.Error) { errs = append(errs, e) }
 
+	errs = append(errs, c.repoErrs...)
+
 	var missing []string
 	for _, f := range []struct{ val, key, env string }{
 		{c.Graph.TenantID, "graph.tenantId", "GRAPH_TENANT_ID"},
@@ -335,7 +423,7 @@ func (c Config) Validate() error {
 			missing = append(missing, f.key+" ("+f.env+")")
 		}
 	}
-	if len(missing) > 0 {
+	if len(missing) > 0 && c.usesGlobalGraph() {
 		add(apperr.New(apperr.CfgGraphCredentials, "empty: %s%s", strings.Join(missing, ", "),
 			c.emptyNote("GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET")))
 	}
@@ -349,7 +437,9 @@ func (c Config) Validate() error {
 		add(apperr.New(apperr.CfgNoInterfaces, "server.interfaces is empty (check also the ADAPTER_INTERFACES variable)"))
 	}
 
-	if len(c.Repositories) == 0 {
+	// With a state directory the first repository is added through zaks-drive repo add,
+	// so a server without any repository yet may start (and reports not ready).
+	if len(c.Repositories) == 0 && c.Server.StateDir == "" {
 		add(apperr.New(apperr.CfgNoRepositories, "the `repositories:` list is empty"))
 	}
 	seen := map[string]bool{}
@@ -363,19 +453,11 @@ func (c Config) Validate() error {
 			add(apperr.New(apperr.CfgRepoIDDuplicate, "repository id %q is used more than once", r.ID))
 		}
 		seen[r.ID] = true
-		if r.DriveID == "" && r.UserID == "" && r.SiteID == "" && r.SiteURL == "" {
-			add(apperr.New(apperr.CfgRepoLocationMissing,
-				"repository %q has no SharePoint location: siteUrl, userId, siteId and driveId are all empty%s", name,
-				c.emptyNote("SHAREPOINT_SITE_URL", "SHAREPOINT_USER_ID", "SP_DRIVE_ID")))
-		}
-		if r.SiteURL != "" {
-			if why := siteURLProblem(r.SiteURL); why != "" {
-				add(apperr.New(apperr.CfgSiteURLInvalid, "repository %q: siteUrl %q %s", name, r.SiteURL, why))
-			}
-		}
+		c.validateRepository(name, r, add)
 	}
 
-	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 {
+	// With a state directory, SAP repositories may be added later (zaks-drive repo add --sap), so an empty list is allowed.
+	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 && c.Server.StateDir == "" {
 		add(apperr.New(apperr.CfgCSRepositoriesMissing, "server.interfaces enables contentrepo but contentServer.repositories is empty"))
 	}
 	seenRep := map[string]bool{}

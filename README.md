@@ -115,7 +115,7 @@ zaks-drive doctor                        # diagnoses the installation
 zaks-drive check                         # tests SharePoint access (contacts Microsoft)
 ```
 
-Day to day: `zaks-drive status | logs | stop | restart | update | rollback | support bundle`. Everything is in the [zaks-drive command guide](docs/cli.md). The version above is an example: the first release has to be published by the maintainer, so until then build from source (below).
+Day to day: `zaks-drive status | logs | stop | restart | update | rollback | support bundle`. Step-by-step setup and scenarios (SAP, several repositories, the admin page, backup, updates) are in the [setup and usage guide](docs/guide.md); every flag is in the [CLI reference](docs/cli-reference.md); the reasoning is in the [command guide](docs/cli.md). The version above is an example: the first release has to be published by the maintainer, so until then build from source (below).
 
 <details>
 <summary>From a source checkout, without the command</summary>

@@ -138,9 +138,9 @@ Promise: **single instance, bounded versions.** One server instance owns a local
 | Location | `<data root>/<path>`; the data root is `/var/lib/zaks-drive/data` (a volume) by default. A repository may instead use a **host folder** the administrator mounts into the container; the command prints the exact Compose mount and checks that the container user can write to it |
 | Confinement | Every operation goes through `os.Root`: no `..`, no escaping through links. Symbolic links in the store are refused |
 | IDs | Opaque, stable for a path: a URL-safe encoding of the repository-relative path. There is no rename or move, so the ID cannot go stale |
-| ETags | Derived from size, modification time and a per-file generation counter kept in a hidden sidecar; `If-Match` behaves as on SharePoint (412 on mismatch) |
+| ETags | Derived from the modification time and size. Every write sets a modification time strictly newer than the previous one (even on a coarse file-system clock), so the time acts as the file's generation and no sidecar is needed; `If-Match` behaves as on SharePoint (412 on mismatch) |
 | Writes | Temporary file in the same directory, `fsync`, atomic rename; per-path locks; uploads of unknown size spool to the existing spool directory first |
-| Versions | The last *N* versions (default 5, configurable, `0` disables) are moved to a hidden `.versions/` folder on replace; `GET .../versions` lists them. Older ones are pruned |
+| Versions | The last *N* versions (default 5, configurable, `0` disables) are kept in a hidden `.versions/` folder on replace (a hard link, so the file is never missing while it is replaced); `GET .../versions` lists them. Older ones are pruned |
 | Search | File-name search by walking the tree, bounded by a limit; no content search |
 | Thumbnails, redirect downloads | Not supported (declared in `Capabilities()`) |
 | Names and paths | Linux file name limit (255 bytes); the same forbidden-character handling as SharePoint, so a document ID is the same on both backends |
@@ -272,6 +272,18 @@ Each step is a separate, reviewable pull request.
 5. **State volume, admin API and the one-off container path.**
 6. **`repo` commands** (including the maintenance drain and `repo purge`) and the `status` / `doctor` / `setup` / bundle changes; documentation.
 7. UI in [RFC 0002](0002-server-admin-ui.md).
+
+## Implementation notes
+
+Where the implementation made a choice the text above left open or differs from it:
+
+- **ETags of local files** use a strictly increasing modification time instead of a generation sidecar (see the local backend table).
+- **Detach** removes the stored client secret as well and keeps a secret-free copy of the definition under `detached/<ID>.yaml`, so the repository can be added again and a purge can find its folder. Documents are never touched.
+- **A server without any repository** may start when a state directory is configured (it reports not ready and waits), so the first repository can be added while the server runs. `/readyz` is ready only when every repository is usable.
+- **Admin API** (`/admin/api/v1`) refuses to work without `ADMIN_TOKEN` (the older certificate endpoints only check it when set), and locks out repeated wrong tokens.
+- **Last working state**: a copy of the definitions (not the secrets) is saved after each successful start under `last-good/`; a start whose definitions do not validate falls back to it and reports why.
+- **Purge** is implemented only in the one-off command (`zaks-drive-server repos purge`), never in the admin API. The challenge phrase is a keyed MAC over the repository, the expiry and the exact state of its folder, so it cannot be prepared in advance or replayed after a change.
+- **Not yet done**: the per-repository size cap, per-repository `readOnly` overrides for SAP, per-repository `allowedNetworks` and a `repository` label on metrics remain open questions below.
 
 ## Open questions
 
