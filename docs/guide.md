@@ -55,7 +55,7 @@ flowchart LR
 | Where documents go | SharePoint (Microsoft keeps and backs them up) or a **local folder** (you back up the `state` volume) |
 | Time for SAP | SAP Basis support for OAC0 and STRUST, and a test system |
 
-> **`setup` needs a SharePoint location.** The wizard always creates the first repository (`DMS`) in SharePoint and asks for the Entra application. A server that should use only local folders still starts from that setup; you can add local repositories afterwards and leave `DMS` unused, or edit `config.yaml` by hand (see the [configuration reference](configuration.md)).
+> **You can start with either storage, and Microsoft is optional.** `setup` asks where documents are stored first. **Local folder** needs no Microsoft account, tenant or secret at all (good for trying it out, or for an archive on your own disk). **SharePoint** needs the Entra application. You can add repositories of either kind later, in any order, and each SharePoint repository may use the global application or its **own** tenant, client and secret ([Scenario 5](#scenario-5-add-a-second-sharepoint-repository-with-its-own-entra-application-zh)). The two paths are marked **Path A (local first)** and **Path B (SharePoint first)** below.
 
 ## Part 1: Install and first start
 
@@ -70,7 +70,9 @@ zaks-drive version                        # the command is installed; no server 
 
 If the command is not found, add `~/.local/bin` to your `PATH` (the installer says where it put it). Add `--verify-attestation` (needs the GitHub CLI) to also verify GitHub's signed build provenance. From source instead: `go build -o zaks-drive ./cmd/zaks-drive`.
 
-### 2. Prepare Microsoft 365 (once, by an administrator)
+### 2. Prepare Microsoft 365 (Path B only; skip this for Path A)
+
+**Path A (local first): nothing to prepare, go to step 3.** Path B, once, by an administrator:
 
 1. [Register the Entra application](microsoft-365/entra-app-registration.md): note the tenant ID and client ID and create a client secret (copy the **Value**, not the Secret ID).
 2. [Choose the permission](microsoft-365/graph-permissions.md): `Sites.Selected` plus a site grant with role `write` is recommended.
@@ -82,9 +84,19 @@ If the command is not found, add `~/.local/bin` to your `PATH` (the installer sa
 zaks-drive setup
 ```
 
-It asks for the deployment directory (default `/opt/zaks-drive`), bind address and ports, interfaces (`rest`, `contentrepo`), tenant and client IDs, the client secret (typed without echo), the SharePoint site, library and folder, the first SAP repository ID (default `Z1`), allowed networks and TLS. It generates the API keys and the admin token, validates everything with the server's own loader **before** writing, and builds the image from the verified release. Secrets go only into `.env` (mode 600).
+**Path A, local first, no Microsoft account.** The first question is *"Where will documents be stored first?"*; press Enter for `local` (the default when nothing Microsoft is known). It then asks only for the directory, address and ports, the SAP interface (default no), TLS and the log level. Or in one line:
 
-Non-interactive (scripts, configuration management):
+```bash
+zaks-drive setup --non-interactive --storage local --dir /opt/zaks-drive          # nothing from Microsoft
+zaks-drive start                       # "running, but no repository is configured yet": expected, not an error
+zaks-drive repo add AD --backend local --yes     # your first repository, a folder on this server; applies by a restart
+```
+
+You now have a working server (`zaks-drive repo list` shows `AD  local  serving`); try it with [Scenario 2](#scenario-2-store-documents-of-an-application-in-sharepoint-rest)'s commands using `AD` instead of `DMS`. Add SharePoint later with `zaks-drive repo add ZH --backend sharepoint ...` ([Scenario 5](#scenario-5-add-a-second-sharepoint-repository-with-its-own-entra-application-zh)). To expose a local repository to SAP, enable the interface (`--interfaces rest,contentrepo` at setup, or edit `server.interfaces`) and add it with `--sap` ([Scenario 4](#scenario-4-add-a-local-folder-archive-repository-ad)).
+
+**Path B, SharePoint first.** Answer `sharepoint` to the first question. It asks for the directory (default `/opt/zaks-drive`), bind address and ports, interfaces (`rest`, `contentrepo`), tenant and client IDs, the client secret (typed without echo), the SharePoint site, library and folder, the first SAP repository ID (default `Z1`), allowed networks and TLS. It generates the API keys and the admin token, validates everything with the server's own loader **before** writing, and builds the image from the verified release. Secrets go only into `.env` (mode 600).
+
+Path B non-interactive (scripts, configuration management):
 
 ```bash
 printf '%s' "$ENTRA_CLIENT_SECRET" > /run/secrets/zd-secret       # a file you manage; never a command-line value
@@ -133,8 +145,8 @@ Open `http://127.0.0.1:9090/admin/ui/` (on the server itself, or through [an SSH
 | Thing | Where |
 |---|---|
 | Deployment | `/opt/zaks-drive/` with `docker-compose.yml`, `.env` (secrets, mode 600), `config.yaml` (no secrets) |
-| Static repository `DMS` | SharePoint, from `config.yaml` |
-| SAP content repository `Z1` | maps to `DMS`, folder `ContentServer/Z1`, signatures required |
+| Path B: static repository `DMS` | SharePoint, from `config.yaml`. (Path A has none yet: you add `AD` with `repo add`) |
+| Path B: SAP content repository `Z1` | maps to `DMS`, folder `ContentServer/Z1`, signatures required. (Path A: SAP repositories are created per repository with `repo add ... --sap`) |
 | Managed state | the `state` volume at `/var/lib/zaks-drive` (empty until you add repositories) |
 | Credentials | REST API keys and `ADMIN_TOKEN` in `.env`; the admin page password you just chose |
 
@@ -210,7 +222,7 @@ Full SAP procedure, signature modes and what SAP sends: [Connect SAP S/4HANA](sa
 
 ### Scenario 4: Add a local-folder archive repository (AD)
 
-**Goal:** a repository `AD` that keeps documents on the server's disk (for example a cheap SAP archive), exposed to SAP as content repository `AD`. **Needs:** Part 1 done; disk space and a backup plan for the `state` volume.
+**Goal:** a repository `AD` that keeps documents on the server's disk (for example a cheap SAP archive), exposed to SAP as content repository `AD`. **Needs:** Part 1 done (if you started with Path A and did not enable the SAP interface, set `server.interfaces: [rest, contentrepo]` in `config.yaml` and `zaks-drive restart` first); disk space and a backup plan for the `state` volume.
 
 ```bash
 zaks-drive repo add AD --backend local --versions 5 --sap --description "Archive" --yes

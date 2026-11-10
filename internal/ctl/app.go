@@ -68,6 +68,8 @@ type App struct {
 	PortBusy func(host string, port int) bool
 
 	inReader *bufio.Reader
+	// noRepoYet is set when the server answers "not ready" only because no repository exists yet.
+	noRepoYet bool
 }
 
 // NewApp returns an App wired to the real process environment.

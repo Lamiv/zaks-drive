@@ -493,8 +493,10 @@ func (r *diagRun) checkReadiness() {
 	switch {
 	case err != nil:
 		r.add("readiness", StatusFail, "the admin endpoint does not answer", "run: zaks-drive logs --tail 50")
+	case code == http.StatusServiceUnavailable && strings.Contains(body, noRepositoryMarker):
+		r.add("readiness", StatusWarn, "the server is running but no repository is configured yet", "add one: zaks-drive repo add AD --backend local --yes (or --backend sharepoint ...)")
 	case code == http.StatusOK:
-		r.add("readiness", StatusPass, "ready: the server reached SharePoint with its credentials", "")
+		r.add("readiness", StatusPass, "ready: every repository is reachable", "")
 	default:
 		cat, fix := classifyReadiness(body)
 		r.add("readiness", StatusFail, cat+" ("+oneLine(body)+")", fix)

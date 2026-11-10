@@ -49,7 +49,8 @@ Create or update a deployment: validate, then write `.env` (mode 600) and `confi
 | `--cs-port N` | host port of the SAP Content Server interface | `8090` |
 | `--admin-port N` | host port of the admin and health endpoint (bound to `127.0.0.1`) | `9090` |
 | `--interfaces LIST` | comma-separated: `rest`, `contentrepo` | both |
-| `--site-url URL` | SharePoint site address, e.g. `https://contoso.sharepoint.com/sites/SAP_DOCS` | |
+| `--storage S` | where documents are stored first: `local` (a folder on this server; **no Microsoft account, tenant or secret needed**; no repository is created yet, add it with `repo add`) or `sharepoint`. Interactive setup asks (default `local` when nothing Microsoft is known). Non-interactive default: `sharepoint`. With `local`, the SharePoint and Microsoft options below are refused and `--interfaces` defaults to `rest` | `sharepoint` |
+| `--site-url URL` | SharePoint site address, e.g. `https://contoso.sharepoint.com/sites/SAP_DOCS` (`sharepoint` storage) | |
 | `--library NAME` | document library display name | `Documents` |
 | `--root-path PATH` | folder inside the library | `SAP_DMS` |
 | `--tenant-id GUID` | Microsoft Entra directory (tenant) ID | |

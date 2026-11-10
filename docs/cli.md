@@ -81,6 +81,10 @@ How it protects you:
 - An existing configuration is not replaced without `--force`; then the old files are backed up (the `.env` backup stays `600`) and existing keys are kept.
 - The client secret may be given as a file or environment variable for automation, never as a command-line value.
 
+### Starting without a Microsoft account
+
+The first question of `zaks-drive setup` is where documents are stored first. Answer **local** (or pass `--storage local`) and no tenant, client, secret or SharePoint site is asked for or written; `.env` has the three `GRAPH_*` values empty and `config.yaml` has no repository yet. `zaks-drive start` then reports that the server is running but has no repository ("not ready" is expected until you add one), and `zaks-drive repo add AD --backend local --yes` creates the first one. SharePoint repositories, each with the global Microsoft application or its own, can be added at any time with `repo add --backend sharepoint`. The storage type of a repository is chosen when it is created and cannot be changed later. Step by step: [setup and usage guide](guide.md#3-run-the-setup-wizard).
+
 ### Non-interactive setup
 
 ```bash
@@ -175,7 +179,7 @@ zaks-drive doctor --list           # every diagnostic and how it works
 [PASS   ] config-valid        config.yaml and .env load without errors
 [WARN   ] repository-mapping  contentServer.allowedNetworks is empty: any host that reaches the SAP port may call it
                                 fix: tighten the settings before production use
-[PASS   ] readiness           ready: the server reached SharePoint with its credentials
+[PASS   ] readiness           ready: every repository is reachable
 [PASS   ] sap-endpoint        serverInfo answers and lists 1 configured repositories (SAP itself was not contacted)
 [SKIPPED] graph-connectivity  not requested: this test contacts Microsoft and writes small test files to SharePoint
 

@@ -280,3 +280,15 @@ func TestServerWithoutRepositoriesMayStartOnlyWithAStateDirectory(t *testing.T) 
 		t.Fatalf("without a state directory zero repositories stays an error: %v", err)
 	}
 }
+
+func TestSAPInterfaceWithoutContentRepositoriesIsAllowedWithAStateDirectory(t *testing.T) {
+	state := t.TempDir()
+	with := writeCfg(t, "server: { interfaces: [rest, contentrepo], stateDir: \""+filepath.ToSlash(state)+"\" }\nauth: { disabled: true }\n")
+	if _, err := Load(with); err != nil {
+		t.Fatalf("SAP repositories can be added later with a state directory: %s", apperr.Format(err))
+	}
+	without := writeCfg(t, "server: { interfaces: [rest, contentrepo] }\ngraph: { tenantId: t, clientId: c, clientSecret: s }\nauth: { disabled: true }\nrepositories:\n  - { id: DMS, siteUrl: \"https://x.sharepoint.com/sites/a\" }\n")
+	if _, err := Load(without); err == nil || !strings.Contains(apperr.Format(err), "CFG_CS_REPOSITORIES_MISSING") {
+		t.Fatalf("without a state directory an empty SAP list stays an error: %v", err)
+	}
+}

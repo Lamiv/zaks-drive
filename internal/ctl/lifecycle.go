@@ -82,6 +82,9 @@ func (a *App) waitReady(ctx context.Context, d *Deployment, timeout time.Duratio
 		}
 		code, body, err := a.httpGet(ctx, a.readyURL(d, "/readyz"))
 		switch {
+		case err == nil && code == http.StatusServiceUnavailable && strings.Contains(body, noRepositoryMarker):
+			a.noRepoYet = true // running, waiting for its first repository: not a failure
+			return ""
 		case err == nil && code == http.StatusOK:
 			return ""
 		case err == nil:
@@ -204,7 +207,13 @@ func (a *App) printEndpoints(d *Deployment, cfg config.Config) {
 	if host == "0.0.0.0" || host == "" {
 		host = "<this-host>"
 	}
-	a.printf("ZAKS Drive is ready.\n")
+	if a.noRepoYet {
+		a.printf("ZAKS Drive is running, but no repository is configured yet, so it cannot store documents.\n")
+		a.printf("  Add the first one:  zaks-drive repo add AD --backend local --yes     (a folder on this server)\n")
+		a.printf("  or SharePoint:      zaks-drive repo add ZH --backend sharepoint --site-url <url> --tenant-id <id> --client-id <id> --secret-file <file>\n")
+	} else {
+		a.printf("ZAKS Drive is ready.\n")
+	}
 	if cfg.Server.Enabled("rest") {
 		a.printf("  REST API            http://%s:%d/api/v1\n", host, p.REST)
 	}
@@ -424,3 +433,6 @@ func (a *App) cmdVersion(ctx context.Context, args []string) int {
 	}
 	return ExitOK
 }
+
+// noRepositoryMarker is part of the server's /readyz text while no repository exists yet.
+const noRepositoryMarker = "no repository is configured yet"

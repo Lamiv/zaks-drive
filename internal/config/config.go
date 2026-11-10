@@ -456,7 +456,8 @@ func (c Config) Validate() error {
 		c.validateRepository(name, r, add)
 	}
 
-	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 && !(c.Server.StateDir != "" && len(c.Repositories) == 0) {
+	// With a state directory, SAP repositories may be added later (zaks-drive repo add --sap), so an empty list is allowed.
+	if c.Server.Enabled("contentrepo") && len(c.ContentServer.Repositories) == 0 && c.Server.StateDir == "" {
 		add(apperr.New(apperr.CfgCSRepositoriesMissing, "server.interfaces enables contentrepo but contentServer.repositories is empty"))
 	}
 	seenRep := map[string]bool{}
