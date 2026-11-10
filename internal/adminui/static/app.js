@@ -220,12 +220,13 @@ async function viewOverview() {
 function row(k, v) { return el("tr", {}, el("th", { scope: "row" }, k), el("td", { class: "wrap" }, v)); }
 
 function placeOf(r) {
-  if (r.backend === "local") return "local folder " + ((r.local && r.local.path) || "") + " (keeps " + ((r.local && r.local.versions != null) ? r.local.versions : 5) + " versions)";
+  const ro = r.readOnly ? ", read-only" : "";
+  if (r.backend === "local") return "local folder " + ((r.local && r.local.path) || "") + " (keeps " + ((r.local && r.local.versions != null) ? r.local.versions : 5) + " versions" + ro + ")";
   let l = r.siteUrl || "";
   if (r.driveId) l = "drive " + r.driveId; else if (r.userId) l = "OneDrive of " + r.userId; else if (r.siteId) l = "site " + r.siteId;
   if (r.driveName) l += " / " + r.driveName;
   if (r.rootPath) l += " / " + r.rootPath;
-  return l + (r.tenantId ? " (own application)" : "");
+  return l + (r.tenantId ? " (own application" + ro + ")" : (r.readOnly ? " (read-only)" : ""));
 }
 
 function repoTable(repos, serving, withActions) {
